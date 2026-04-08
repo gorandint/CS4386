@@ -13,6 +13,12 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#endif
+
 using namespace std;
 
 #ifndef MAX_M
@@ -765,6 +771,95 @@ public:
     }
 };
 
+class CenterExpansionHeuristic : public Heuristic {
+public:
+    const char* name() const { return "CenterExpansion"; }
+    int estimate(const State& s) const {
+        int score = (popcnt(s.p1) - popcnt(s.p2)) * 50;
+        U64 occ = s.p1 | s.p2;
+        U64 empty = g_valid_mask & (~occ);
+
+        U64 t = s.p1;
+        while (t) {
+            int idx = lsb_index(t);
+            t &= t - 1;
+            int r = idx / 8;
+            int c = idx % 8;
+            score += 36 - center_dist2(r, c) * 3;
+            score += popcnt(g_clone_dst_mask[idx] & empty) * 5;
+            score += popcnt(g_jump_dst_mask[idx] & empty) * 2;
+        }
+        t = s.p2;
+        while (t) {
+            int idx = lsb_index(t);
+            t &= t - 1;
+            int r = idx / 8;
+            int c = idx % 8;
+            score -= 36 - center_dist2(r, c) * 3;
+            score -= popcnt(g_clone_dst_mask[idx] & empty) * 5;
+            score -= popcnt(g_jump_dst_mask[idx] & empty) * 2;
+        }
+        return score;
+    }
+};
+
+class CenterPressurePCHeuristic : public Heuristic {
+public:
+    const char* name() const { return "CenterPressurePC"; }
+    int estimate(const State& s) const {
+        int score = (popcnt(s.p1) - popcnt(s.p2)) * 50;
+        U64 t = s.p1;
+        while (t) {
+            int idx = lsb_index(t);
+            t &= t - 1;
+            int r = idx / 8;
+            int c = idx % 8;
+            score += 34 - center_dist2(r, c) * 2;
+            score += popcnt(g_adj_mask[idx] & s.p2) * 11;
+            score += popcnt(g_adj_mask[idx] & s.p2) * 7;
+        }
+        t = s.p2;
+        while (t) {
+            int idx = lsb_index(t);
+            t &= t - 1;
+            int r = idx / 8;
+            int c = idx % 8;
+            score -= 34 - center_dist2(r, c) * 2;
+            score -= popcnt(g_adj_mask[idx] & s.p1) * 11;
+            score -= popcnt(g_adj_mask[idx] & s.p1) * 7;
+        }
+        return score;
+    }
+};
+
+class PressureExpansionHeuristic : public Heuristic {
+public:
+    const char* name() const { return "PressureExpansion"; }
+    int estimate(const State& s) const {
+        int score = (popcnt(s.p1) - popcnt(s.p2)) * 50;
+        U64 occ = s.p1 | s.p2;
+        U64 empty = g_valid_mask & (~occ);
+
+        U64 t = s.p1;
+        while (t) {
+            int idx = lsb_index(t);
+            t &= t - 1;
+            score += popcnt(g_adj_mask[idx] & s.p2) * 10;
+            score += popcnt(g_clone_dst_mask[idx] & empty) * 4;
+            score += popcnt(g_jump_dst_mask[idx] & empty) * 2;
+        }
+        t = s.p2;
+        while (t) {
+            int idx = lsb_index(t);
+            t &= t - 1;
+            score -= popcnt(g_adj_mask[idx] & s.p1) * 10;
+            score -= popcnt(g_clone_dst_mask[idx] & empty) * 4;
+            score -= popcnt(g_jump_dst_mask[idx] & empty) * 2;
+        }
+        return score;
+    }
+};
+
 class MaterialBoostHeuristic : public Heuristic {
 private:
     const Heuristic* base_;
@@ -1171,7 +1266,7 @@ void play_games(int step) {
     int8 player = (step & 1) ? 1 : 2;
     State s = board_to_state(board, step);
 
-    static HybridHeuristic h_base;
+    static ExpansionHeuristic h_base;
     static MaterialBoostHeuristic h_best(&h_base, 40);
     Move best = iterative_deepening_solver(s, player, &h_best, 10, 1850.0);
 
@@ -1214,8 +1309,17 @@ struct MatchResult {
 
 struct TournamentResult {
     vector<int> wins;
+    vector<int> timeout_wins;
     vector<double> avg_move_time;
 };
+
+static void ensure_out_dir() {
+#ifdef _WIN32
+    _mkdir("out");
+#else
+    mkdir("out", 0755);
+#endif
+}
 
 static string make_unique_tag() {
     long long ms = chrono::duration_cast<chrono::milliseconds>(
@@ -1298,6 +1402,7 @@ TournamentResult run_tournament(
 ) {
     int n = (int)solvers.size();
     vector<int> wins(n, 0);
+    vector<int> timeout_wins(n, 0);
     vector<int> games(n, 0);
     vector<double> total_time(n, 0.0);
 
@@ -1323,6 +1428,7 @@ TournamentResult run_tournament(
                 }
 
                 if (winner_global >= 0 && winner_global < n) wins[winner_global]++;
+                if (res.ply >= MAX_STEPS && winner_global >= 0 && winner_global < n) timeout_wins[winner_global]++;
 
                 games[i]++;
                 games[j]++;
@@ -1351,26 +1457,28 @@ TournamentResult run_tournament(
     for (int i = 0; i < n; i++) rank[i] = i;
     sort(rank.begin(), rank.end(), [&](int a, int b) {
         if (wins[a] != wins[b]) return wins[a] > wins[b];
+        if (timeout_wins[a] != timeout_wins[b]) return timeout_wins[a] < timeout_wins[b];
         return avg_time[a] < avg_time[b];
     });
 
     fprintf(report_fp, "## %s\n\n", stage_name);
     fprintf(report_fp, "- CSV: %s\n", csv_path.c_str());
-    fprintf(report_fp, "- Format: iterative deepening only, time limit 1000 ms, 10 trials per pair (color swapped by trial parity).\n\n");
-    fprintf(report_fp, "| Rank | Heuristic | Wins | Avg Move Time (ms) |\n");
-    fprintf(report_fp, "|---:|---|---:|---:|\n");
+    fprintf(report_fp, "- Format: iterative deepening only, time limit 1000 ms, %d trials per pair (color swapped by trial parity).\n\n", trials);
+    fprintf(report_fp, "| Rank | Heuristic | Wins | Timeout Wins | Avg Move Time (ms) |\n");
+    fprintf(report_fp, "|---:|---|---:|---:|---:|\n");
     for (int k = 0; k < n; k++) {
         int i = rank[k];
-        fprintf(report_fp, "| %d | %s | %d | %.2f |\n", k + 1, solvers[i].name, wins[i], avg_time[i]);
+        fprintf(report_fp, "| %d | %s | %d | %d | %.2f |\n", k + 1, solvers[i].name, wins[i], timeout_wins[i], avg_time[i]);
     }
     fprintf(report_fp, "\n");
 
-    return {wins, avg_time};
+    return {wins, timeout_wins, avg_time};
 }
 
 int main() {
     init_masks();
     init_zobrist();
+    ensure_out_dir();
 
     string run_tag = make_unique_tag();
     string report_path = string("out/heuristic_iteration_report_") + run_tag + ".md";
@@ -1378,150 +1486,119 @@ int main() {
 
     fprintf(report_fp, "# Ataxx Heuristic Iteration Report\n\n");
     fprintf(report_fp, "Run tag: %s\n\n", run_tag.c_str());
-    fprintf(report_fp, "All heuristics in this run use intrinsic material coefficient = 50.\n");
-    fprintf(report_fp, "MaterialBoost is disabled in round 5 and round 6, and only enabled in round 7 for top models.\n\n");
+    fprintf(report_fp, "All base heuristics in this run use intrinsic material coefficient = 50.\n");
+    fprintf(report_fp, "Ranking key: wins desc, timeout wins asc, avg move time asc.\n\n");
 
     MaterialHeuristic h_mat;
     MobilityHeuristic h_mob;
-    CenterControlHeuristic h_ctr;
-    InfectionPressureHeuristic h_inf;
     ExpansionHeuristic h_exp;
-    SafetyHeuristic h_safe;
-    InfluenceHeuristic h_infl;
-    FrontierHeuristic h_front;
     HybridHeuristic h_hyb;
-    PositionWeightHeuristic h_pos;
     PotentialConversionHeuristic h_pconv;
-    ControlAreaHeuristic h_carea;
-    AggressionHeuristic h_agg;
-    AdaptiveHeuristic h_adapt;
 
-    const int trials = 10;
+    CenterExpansionHeuristic h_cexp;
+    CenterPressurePCHeuristic h_cppc;
+    PressureExpansionHeuristic h_pexp;
+
+    MaterialBoostHeuristic h_exp40(&h_exp, 40);
+    MaterialBoostHeuristic h_pc40(&h_pconv, 40);
+    MaterialBoostHeuristic h_hyb40(&h_hyb, 40);
+    MaterialBoostHeuristic h_cexp40(&h_cexp, 40);
+    MaterialBoostHeuristic h_cppc40(&h_cppc, 40);
+    MaterialBoostHeuristic h_pexp40(&h_pexp, 40);
+
+    const int trials_main = 20;
     const int id_depth = 6;
     const double id_time_ms = 1000.0;
 
-    vector<const Heuristic*> round5_pool = {
-        &h_mat,
-        &h_exp,
-        &h_hyb,
-        &h_mob,
-        &h_pconv,
-        &h_pos,
-        &h_carea,
-        &h_agg,
-        &h_adapt
+    vector<SolverProfile> stage9 = {
+        {"Material", SOLVER_ID, &h_mat, id_depth, 0, id_time_ms},
+        {h_exp40.name(), SOLVER_ID, &h_exp40, id_depth, 0, id_time_ms},
+        {h_pc40.name(), SOLVER_ID, &h_pc40, id_depth, 0, id_time_ms},
+        {h_hyb40.name(), SOLVER_ID, &h_hyb40, id_depth, 0, id_time_ms}
     };
+    string csv9 = string("out/stage9_core_compare_") + run_tag + ".csv";
+    TournamentResult r9 = run_tournament(stage9, trials_main, csv9, report_fp, "Stage 9 - Exp40 vs PC40 vs Hybrid40 vs Material");
 
-    vector<SolverProfile> stage5;
-    for (const Heuristic* h : round5_pool) {
-        stage5.push_back({h->name(), SOLVER_ID, h, id_depth, 0, id_time_ms});
-    }
-
-    string csv5 = string("out/stage5_unified_base_") + run_tag + ".csv";
-    TournamentResult r5 = run_tournament(stage5, trials, csv5, report_fp, "Stage 5 - Unified Material Base");
-
-    vector<int> idx5(stage5.size());
-    for (int i = 0; i < (int)stage5.size(); i++) idx5[i] = i;
-    sort(idx5.begin(), idx5.end(), [&](int a, int b) {
-        if (r5.wins[a] != r5.wins[b]) return r5.wins[a] > r5.wins[b];
-        return r5.avg_move_time[a] < r5.avg_move_time[b];
+    vector<int> idx9(stage9.size());
+    for (int i = 0; i < (int)stage9.size(); i++) idx9[i] = i;
+    sort(idx9.begin(), idx9.end(), [&](int a, int b) {
+        if (r9.wins[a] != r9.wins[b]) return r9.wins[a] > r9.wins[b];
+        if (r9.timeout_wins[a] != r9.timeout_wins[b]) return r9.timeout_wins[a] < r9.timeout_wins[b];
+        return r9.avg_move_time[a] < r9.avg_move_time[b];
     });
 
-    vector<const Heuristic*> round6_pool;
-    for (int k = 0; k < 5 && k < (int)idx5.size(); k++) {
-        round6_pool.push_back(stage5[idx5[k]].h);
-    }
+    vector<SolverProfile> stage10 = {
+        {"Material", SOLVER_ID, &h_mat, id_depth, 0, id_time_ms},
+        {h_exp40.name(), SOLVER_ID, &h_exp40, id_depth, 0, id_time_ms},
+        {h_pc40.name(), SOLVER_ID, &h_pc40, id_depth, 0, id_time_ms},
+        {h_hyb40.name(), SOLVER_ID, &h_hyb40, id_depth, 0, id_time_ms},
+        {h_cexp40.name(), SOLVER_ID, &h_cexp40, id_depth, 0, id_time_ms},
+        {h_cppc40.name(), SOLVER_ID, &h_cppc40, id_depth, 0, id_time_ms},
+        {h_pexp40.name(), SOLVER_ID, &h_pexp40, id_depth, 0, id_time_ms}
+    };
+    string csv10 = string("out/stage10_recombine_mat40_") + run_tag + ".csv";
+    TournamentResult r10 = run_tournament(stage10, trials_main, csv10, report_fp, "Stage 10 - Recombine Under Mat40");
 
-    vector<SolverProfile> stage6;
-    for (const Heuristic* h : round6_pool) {
-        stage6.push_back({h->name(), SOLVER_ID, h, id_depth, 0, id_time_ms});
-    }
-
-    string csv6 = string("out/stage6_filtered_") + run_tag + ".csv";
-    TournamentResult r6 = run_tournament(stage6, trials, csv6, report_fp, "Stage 6 - Filtered Candidates");
-
-    vector<int> idx6(stage6.size());
-    for (int i = 0; i < (int)stage6.size(); i++) idx6[i] = i;
-    sort(idx6.begin(), idx6.end(), [&](int a, int b) {
-        if (r6.wins[a] != r6.wins[b]) return r6.wins[a] > r6.wins[b];
-        return r6.avg_move_time[a] < r6.avg_move_time[b];
+    vector<int> idx10(stage10.size());
+    for (int i = 0; i < (int)stage10.size(); i++) idx10[i] = i;
+    sort(idx10.begin(), idx10.end(), [&](int a, int b) {
+        if (r10.wins[a] != r10.wins[b]) return r10.wins[a] > r10.wins[b];
+        if (r10.timeout_wins[a] != r10.timeout_wins[b]) return r10.timeout_wins[a] < r10.timeout_wins[b];
+        return r10.avg_move_time[a] < r10.avg_move_time[b];
     });
 
-    vector<const Heuristic*> boost_targets;
-    for (int k = 0; k < 2 && k < (int)idx6.size(); k++) {
-        boost_targets.push_back(stage6[idx6[k]].h);
-    }
+    vector<SolverProfile> stage11 = {
+        {"AB5-Material", SOLVER_AB, &h_mat, 5, 0, 0},
+        {"AB6-Material", SOLVER_AB, &h_mat, 6, 0, 0},
+        {"AB7-Material", SOLVER_AB, &h_mat, 7, 0, 0},
+        {"ID-Material", SOLVER_ID, &h_mat, id_depth, 0, id_time_ms}
+    };
+    string csv11 = string("out/stage11_ab_vs_id_material_") + run_tag + ".csv";
+    TournamentResult r11 = run_tournament(stage11, 10, csv11, report_fp, "Stage 11 - AB Material vs ID Material");
 
-    vector<MaterialBoostHeuristic> round7_boost;
-    const int boost_weights[3] = {40, 80, 120};
-    for (const Heuristic* h : boost_targets) {
-        for (int w : boost_weights) {
-            round7_boost.emplace_back(h, w);
-        }
-    }
-
-    vector<SolverProfile> stage7;
-    for (const Heuristic* h : boost_targets) {
-        stage7.push_back({h->name(), SOLVER_ID, h, id_depth, 0, id_time_ms});
-    }
-    for (const MaterialBoostHeuristic& h : round7_boost) {
-        stage7.push_back({h.name(), SOLVER_ID, &h, id_depth, 0, id_time_ms});
-    }
-
-    string csv7 = string("out/stage7_boost_tuning_") + run_tag + ".csv";
-    TournamentResult r7 = run_tournament(stage7, trials, csv7, report_fp, "Stage 7 - MaterialBoost On Top Models");
-
-    vector<int> idx7(stage7.size());
-    for (int i = 0; i < (int)stage7.size(); i++) idx7[i] = i;
-    sort(idx7.begin(), idx7.end(), [&](int a, int b) {
-        if (r7.wins[a] != r7.wins[b]) return r7.wins[a] > r7.wins[b];
-        return r7.avg_move_time[a] < r7.avg_move_time[b];
+    vector<int> idx11(stage11.size());
+    for (int i = 0; i < (int)stage11.size(); i++) idx11[i] = i;
+    sort(idx11.begin(), idx11.end(), [&](int a, int b) {
+        if (r11.wins[a] != r11.wins[b]) return r11.wins[a] > r11.wins[b];
+        if (r11.timeout_wins[a] != r11.timeout_wins[b]) return r11.timeout_wins[a] < r11.timeout_wins[b];
+        return r11.avg_move_time[a] < r11.avg_move_time[b];
     });
 
-    vector<MaterialBoostHeuristic> round8_hybrid_scan;
-    const int hybrid_scan_w[5] = {20, 30, 40, 50, 60};
-    for (int w : hybrid_scan_w) {
-        round8_hybrid_scan.emplace_back(&h_hyb, w);
-    }
+    vector<SolverProfile> stage12 = {
+        {"ID-Hybrid", SOLVER_ID, &h_hyb40, id_depth, 0, id_time_ms},
+        {"MCTS-Random", SOLVER_MCTS, nullptr, 0, 200000, 1000.0},
+        {"MCTS-Hybrid", SOLVER_MCTS, &h_hyb40, 0, 200000, 1000.0},
+        {"MCTS-Material", SOLVER_MCTS, &h_mat, 0, 200000, 1000.0}
+    };
+    string csv12 = string("out/stage12_id_vs_mcts_") + run_tag + ".csv";
+    TournamentResult r12 = run_tournament(stage12, 10, csv12, report_fp, "Stage 12 - ID Hybrid vs MCTS Variants");
 
-    vector<SolverProfile> stage8;
-    stage8.push_back({"Hybrid", SOLVER_ID, &h_hyb, id_depth, 0, id_time_ms});
-    stage8.push_back({"Material", SOLVER_ID, &h_mat, id_depth, 0, id_time_ms});
-    stage8.push_back({"PotentialConversion", SOLVER_ID, &h_pconv, id_depth, 0, id_time_ms});
-    for (const MaterialBoostHeuristic& h : round8_hybrid_scan) {
-        stage8.push_back({h.name(), SOLVER_ID, &h, id_depth, 0, id_time_ms});
-    }
-
-    string csv8 = string("out/stage8_hybrid_refine_") + run_tag + ".csv";
-    TournamentResult r8 = run_tournament(stage8, trials, csv8, report_fp, "Stage 8 - Hybrid MaterialBoost Refinement");
-
-    vector<int> idx8(stage8.size());
-    for (int i = 0; i < (int)stage8.size(); i++) idx8[i] = i;
-    sort(idx8.begin(), idx8.end(), [&](int a, int b) {
-        if (r8.wins[a] != r8.wins[b]) return r8.wins[a] > r8.wins[b];
-        return r8.avg_move_time[a] < r8.avg_move_time[b];
+    vector<int> idx12(stage12.size());
+    for (int i = 0; i < (int)stage12.size(); i++) idx12[i] = i;
+    sort(idx12.begin(), idx12.end(), [&](int a, int b) {
+        if (r12.wins[a] != r12.wins[b]) return r12.wins[a] > r12.wins[b];
+        if (r12.timeout_wins[a] != r12.timeout_wins[b]) return r12.timeout_wins[a] < r12.timeout_wins[b];
+        return r12.avg_move_time[a] < r12.avg_move_time[b];
     });
 
     fprintf(report_fp, "## Selection Summary\n\n");
-    if (!idx8.empty()) {
-        int best = idx8[0];
-        fprintf(report_fp, "Best heuristic after round 8: **%s** (wins=%d, avg move time=%.2f ms).\n\n",
-                stage8[best].name, r8.wins[best], r8.avg_move_time[best]);
-    } else if (!idx7.empty()) {
-        int best = idx7[0];
-        fprintf(report_fp, "Best heuristic after round 7: **%s** (wins=%d, avg move time=%.2f ms).\n\n",
-                stage7[best].name, r7.wins[best], r7.avg_move_time[best]);
+    if (!idx10.empty()) {
+        int best = idx10[0];
+        fprintf(report_fp, "Best heuristic after recombination: **%s** (wins=%d, timeout wins=%d, avg move time=%.2f ms).\n\n",
+                stage10[best].name, r10.wins[best], r10.timeout_wins[best], r10.avg_move_time[best]);
     }
-    fprintf(report_fp, "Round 5 input: Material + previously strong models + newly proposed models.\n\n");
+    fprintf(report_fp, "Round 9 compares Exp+Mat40, PC+Mat40, Hybrid+Mat40 and Material with 20 trials per pair.\n");
+    fprintf(report_fp, "Round 10 explores recombinations under Mat40.\n");
+    fprintf(report_fp, "Round 11 and Round 12 provide AB/ID/MCTS comparison for report usage.\n\n");
 
     fclose(report_fp);
 
     printf("Autopilot run completed.\n");
     printf("Report: %s\n", report_path.c_str());
-    printf("CSV 5: %s\n", csv5.c_str());
-    printf("CSV 6: %s\n", csv6.c_str());
-    printf("CSV 7: %s\n", csv7.c_str());
-    printf("CSV 8: %s\n", csv8.c_str());
+    printf("CSV 9: %s\n", csv9.c_str());
+    printf("CSV 10: %s\n", csv10.c_str());
+    printf("CSV 11: %s\n", csv11.c_str());
+    printf("CSV 12: %s\n", csv12.c_str());
 
     return 0;
 }
