@@ -13,12 +13,6 @@
 #include <utility>
 #include <vector>
 
-#ifdef _WIN32
-#include <direct.h>
-#else
-#include <sys/stat.h>
-#endif
-
 using namespace std;
 
 #ifndef MAX_M
@@ -27,14 +21,12 @@ using namespace std;
 #define MAX_PIECES 49
 #endif
 
-static_assert(MAX_M == 7 && MAX_N == 7, "This implementation targets a 7x7 Ataxx variant.");
-
 typedef unsigned long long U64;
-typedef signed char int8;
+typedef char int8;
 
 const int WIN_SCORE = 100000000;
 const int INF_SCORE = 200000000;
-const int MAX_GAME_PLY = 200;
+const int MAX_STEPS = 200;
 const int MAX_DEPTH = 64;
 
 enum TTFlag { TT_EXACT = 0, TT_LOWER = 1, TT_UPPER = 2 };
@@ -92,7 +84,7 @@ static array<U64, 64> g_jump_dst_mask;
 
 static U64 g_zob[64][3];
 static U64 g_zob_side;
-static U64 g_zob_ply[MAX_GAME_PLY + 1];
+static U64 g_zob_ply[MAX_STEPS + 1];
 static U64 g_zob_pass[3];
 static bool g_zob_ready = false;
 
@@ -187,7 +179,7 @@ void init_zobrist() {
         g_zob[i][2] = g_rng();
     }
     g_zob_side = g_rng();
-    for (int i = 0; i <= MAX_GAME_PLY; i++) g_zob_ply[i] = g_rng();
+    for (int i = 0; i <= MAX_STEPS; i++) g_zob_ply[i] = g_rng();
     for (int i = 0; i < 3; i++) g_zob_pass[i] = g_rng();
     g_zob_ready = true;
 }
@@ -207,7 +199,7 @@ inline U64 state_hash(const State& s, int8 player) {
         h ^= g_zob[idx][2];
     }
     if (player == 2) h ^= g_zob_side;
-    if (s.ply >= 0 && s.ply <= MAX_GAME_PLY) h ^= g_zob_ply[s.ply];
+    if (s.ply >= 0 && s.ply <= MAX_STEPS) h ^= g_zob_ply[s.ply];
     h ^= g_zob_pass[s.pass_count];
     return h;
 }
@@ -252,7 +244,7 @@ inline int evaluate_terminal(const State& s, int8 player) {
     if (p2 == 0) return (player == 1 ? WIN_SCORE : -WIN_SCORE);
 
     U64 occ = s.p1 | s.p2;
-    if (occ == g_valid_mask || s.ply >= MAX_GAME_PLY || s.pass_count >= 2) {
+    if (occ == g_valid_mask || s.ply >= MAX_STEPS || s.pass_count >= 2) {
         if (p1 > p2) return (player == 1 ? WIN_SCORE : -WIN_SCORE);
         if (p2 > p1) return (player == 2 ? WIN_SCORE : -WIN_SCORE);
         return 0;
@@ -926,7 +918,6 @@ Move ab_solver(const State& s, int8 player, const Heuristic* h, int max_depth) {
             best = mv;
         }
     }
-    (void)hash;
     return best;
 }
 
@@ -990,7 +981,6 @@ Move iterative_deepening_solver(const State& s, int8 player, const Heuristic* h,
         }
     }
 
-    (void)root_hash;
     return best;
 }
 
@@ -1024,7 +1014,7 @@ int winner_from_state(const State& s) {
     if (p1 == 0) return 2;
     if (p2 == 0) return 1;
     U64 occ = s.p1 | s.p2;
-    if (occ == g_valid_mask || s.ply >= MAX_GAME_PLY || s.pass_count >= 2) {
+    if (occ == g_valid_mask || s.ply >= MAX_STEPS || s.pass_count >= 2) {
         if (p1 > p2) return 1;
         if (p2 > p1) return 2;
         return 0;
@@ -1234,14 +1224,6 @@ static string make_unique_tag() {
     return to_string(ms);
 }
 
-static void ensure_out_dir() {
-#ifdef _WIN32
-    _mkdir("out");
-#else
-    mkdir("out", 0755);
-#endif
-}
-
 State initial_state() {
     State s;
     s.p1 = bit_at(0, 0) | bit_at(6, 6);
@@ -1251,7 +1233,7 @@ State initial_state() {
     return s;
 }
 
-MatchResult play_match(const SolverProfile& p1, const SolverProfile& p2, int max_ply = MAX_GAME_PLY) {
+MatchResult play_match(const SolverProfile& p1, const SolverProfile& p2, int max_ply = MAX_STEPS) {
     State s = initial_state();
     double p1_time = 0.0, p2_time = 0.0;
     int p1_moves = 0, p2_moves = 0;
@@ -1389,8 +1371,6 @@ TournamentResult run_tournament(
 int main() {
     init_masks();
     init_zobrist();
-
-    ensure_out_dir();
 
     string run_tag = make_unique_tag();
     string report_path = string("out/heuristic_iteration_report_") + run_tag + ".md";
