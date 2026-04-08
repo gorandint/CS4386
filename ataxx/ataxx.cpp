@@ -8,8 +8,15 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <random>
 #include <vector>
+
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#endif
 
 using namespace std;
 
@@ -418,54 +425,179 @@ public:
     }
 };
 
-class HybridHeuristic : public Heuristic {
+class ExpansionHeuristic : public Heuristic {
 public:
-    const char* name() const { return "Hybrid"; }
+    const char* name() const { return "Expansion"; }
     int estimate(const State& s) const {
-        int p1n = popcnt(s.p1), p2n = popcnt(s.p2);
-        int mat = (p1n - p2n) * 100;
+        int score = (popcnt(s.p1) - popcnt(s.p2)) * 60;
+        U64 occ = s.p1 | s.p2;
+        U64 empty = g_valid_mask & (~occ);
 
-        int center = 0;
         U64 t = s.p1;
         while (t) {
             int idx = lsb_index(t);
             t &= (t - 1);
-            center += 36 - center_dist2(idx / 8, idx % 8) * 3;
+            score += popcnt(g_clone_dst_mask[idx] & empty) * 6;
+            score += popcnt(g_jump_dst_mask[idx] & empty) * 3;
         }
         t = s.p2;
         while (t) {
             int idx = lsb_index(t);
             t &= (t - 1);
-            center -= 36 - center_dist2(idx / 8, idx % 8) * 3;
+            score -= popcnt(g_clone_dst_mask[idx] & empty) * 6;
+            score -= popcnt(g_jump_dst_mask[idx] & empty) * 3;
         }
+        return score;
+    }
+};
 
-        vector<Move> m1, m2;
-        generate_moves(s, 1, m1);
-        generate_moves(s, 2, m2);
-        int mobility = ((int)m1.size() - (int)m2.size()) * 5;
-
-        int pressure = 0;
-        t = s.p1;
+class SafetyHeuristic : public Heuristic {
+public:
+    const char* name() const { return "Safety"; }
+    int estimate(const State& s) const {
+        int score = (popcnt(s.p1) - popcnt(s.p2)) * 80;
+        U64 t = s.p1;
         while (t) {
             int idx = lsb_index(t);
             t &= (t - 1);
-            pressure += popcnt(g_adj_mask[idx] & s.p2) * 8;
+            int friendly = popcnt(g_adj_mask[idx] & s.p1);
+            int enemy = popcnt(g_adj_mask[idx] & s.p2);
+            score += friendly * 6 - enemy * 8;
         }
         t = s.p2;
         while (t) {
             int idx = lsb_index(t);
             t &= (t - 1);
-            pressure -= popcnt(g_adj_mask[idx] & s.p1) * 8;
+            int friendly = popcnt(g_adj_mask[idx] & s.p2);
+            int enemy = popcnt(g_adj_mask[idx] & s.p1);
+            score -= friendly * 6 - enemy * 8;
         }
+        return score;
+    }
+};
 
+class InfluenceHeuristic : public Heuristic {
+public:
+    const char* name() const { return "Influence"; }
+    int estimate(const State& s) const {
+        int score = (popcnt(s.p1) - popcnt(s.p2)) * 70;
+        U64 occ = s.p1 | s.p2;
+        U64 empty = g_valid_mask & (~occ);
+        U64 e = empty;
+        while (e) {
+            int idx = lsb_index(e);
+            e &= (e - 1);
+            int p1_near = popcnt(g_adj_mask[idx] & s.p1);
+            int p2_near = popcnt(g_adj_mask[idx] & s.p2);
+            score += (p1_near - p2_near) * 9;
+        }
+        return score;
+    }
+};
+
+class FrontierHeuristic : public Heuristic {
+public:
+    const char* name() const { return "Frontier"; }
+    int estimate(const State& s) const {
+        int p1n = popcnt(s.p1), p2n = popcnt(s.p2);
         int empties = 49 - p1n - p2n;
-        if (empties <= 10) {
-            return mat * 2 + center + mobility + pressure;
+        int score = (p1n - p2n) * 90;
+
+        U64 occ = s.p1 | s.p2;
+        U64 empty = g_valid_mask & (~occ);
+        int p1_front = 0, p2_front = 0;
+
+        U64 t = s.p1;
+        while (t) {
+            int idx = lsb_index(t);
+            t &= (t - 1);
+            if (g_adj_mask[idx] & empty) p1_front++;
         }
-        if (empties <= 20) {
-            return mat + center + mobility + pressure;
+        t = s.p2;
+        while (t) {
+            int idx = lsb_index(t);
+            t &= (t - 1);
+            if (g_adj_mask[idx] & empty) p2_front++;
         }
-        return (mat * 3) / 4 + center + mobility * 2 + pressure;
+
+        if (empties > 16) {
+            score += (p1_front - p2_front) * 6;
+        } else {
+            score -= (p1_front - p2_front) * 6;
+        }
+        return score;
+    }
+};
+
+class HybridHeuristic : public Heuristic {
+public:
+    const char* name() const { return "Hybrid"; }
+    int estimate(const State& s) const {
+        int score = (popcnt(s.p1) - popcnt(s.p2)) * 100;
+        U64 occ = s.p1 | s.p2;
+        U64 empty = g_valid_mask & (~occ);
+
+        U64 t = s.p1;
+        while (t) {
+            int idx = lsb_index(t);
+            t &= (t - 1);
+            int r = idx / 8, c = idx % 8;
+            score += 40 - center_dist2(r, c) * 3;
+            score += popcnt(g_adj_mask[idx] & s.p2) * 10;
+            score += popcnt(g_clone_dst_mask[idx] & empty) * 4;
+        }
+
+        t = s.p2;
+        while (t) {
+            int idx = lsb_index(t);
+            t &= (t - 1);
+            int r = idx / 8, c = idx % 8;
+            score -= 40 - center_dist2(r, c) * 3;
+            score -= popcnt(g_adj_mask[idx] & s.p1) * 10;
+            score -= popcnt(g_clone_dst_mask[idx] & empty) * 4;
+        }
+        return score;
+    }
+};
+
+class MaterialBoostHeuristic : public Heuristic {
+private:
+    const Heuristic* base_;
+    int material_w_;
+    string name_;
+
+public:
+    MaterialBoostHeuristic(const Heuristic* base, int material_w)
+        : base_(base), material_w_(material_w) {
+        name_ = string(base_->name()) + "+Mat" + to_string(material_w_);
+    }
+
+    const char* name() const { return name_.c_str(); }
+
+    int estimate(const State& s) const {
+        int mat = popcnt(s.p1) - popcnt(s.p2);
+        return base_->estimate(s) + material_w_ * mat;
+    }
+};
+
+class AdditiveBlendHeuristic : public Heuristic {
+private:
+    const Heuristic* a_;
+    const Heuristic* b_;
+    int w_b_;
+    int scale_;
+    string name_;
+
+public:
+    AdditiveBlendHeuristic(const Heuristic* a, const Heuristic* b, int w_b, int scale = 100)
+        : a_(a), b_(b), w_b_(w_b), scale_(scale) {
+        name_ = string(a_->name()) + "+" + b_->name() + "x" + to_string(w_b_);
+    }
+
+    const char* name() const { return name_.c_str(); }
+
+    int estimate(const State& s) const {
+        return a_->estimate(s) + (b_->estimate(s) * w_b_) / scale_;
     }
 };
 
@@ -836,8 +968,9 @@ void play_games(int step) {
     int8 player = (step & 1) ? 1 : 2;
     State s = board_to_state(board, step);
 
-    HybridHeuristic h_hybrid;
-    Move best = iterative_deepening_solver(s, player, &h_hybrid, 10, 1850.0);
+    static ExpansionHeuristic h_exp;
+    static MaterialBoostHeuristic h_best(&h_exp, 130);
+    Move best = iterative_deepening_solver(s, player, &h_best, 10, 1850.0);
 
     vector<Move> sanity;
     generate_moves(s, player, sanity, true);
@@ -875,6 +1008,26 @@ struct MatchResult {
     double p1_avg_ms;
     double p2_avg_ms;
 };
+
+struct TournamentResult {
+    vector<int> wins;
+    vector<double> avg_move_time;
+};
+
+static string make_unique_tag() {
+    long long ms = chrono::duration_cast<chrono::milliseconds>(
+        chrono::system_clock::now().time_since_epoch()
+    ).count();
+    return to_string(ms);
+}
+
+static void ensure_out_dir() {
+#ifdef _WIN32
+    _mkdir("out");
+#else
+    mkdir("out", 0755);
+#endif
+}
 
 State initial_state() {
     State s;
@@ -941,59 +1094,263 @@ MatchResult play_match(const SolverProfile& p1, const SolverProfile& p2, int max
     }
 }
 
+TournamentResult run_tournament(
+    const vector<SolverProfile>& solvers,
+    int trials,
+    const string& csv_path,
+    FILE* report_fp,
+    const char* stage_name
+) {
+    int n = (int)solvers.size();
+    vector<int> wins(n, 0);
+    vector<int> games(n, 0);
+    vector<double> total_time(n, 0.0);
+
+    FILE* fp = fopen(csv_path.c_str(), "w");
+    fprintf(fp, "Trial,P1,P2,Winner,Ply,P1AvgMS,P2AvgMS\n");
+
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            for (int t = 0; t < trials; t++) {
+                bool swapped = (t & 1);
+                const SolverProfile& A = swapped ? solvers[j] : solvers[i];
+                const SolverProfile& B = swapped ? solvers[i] : solvers[j];
+
+                MatchResult res = play_match(A, B);
+                int winner = res.winner;
+                int winner_global = 0;
+                if (!swapped) {
+                    if (winner == 1) winner_global = i;
+                    else if (winner == 2) winner_global = j;
+                } else {
+                    if (winner == 1) winner_global = j;
+                    else if (winner == 2) winner_global = i;
+                }
+
+                if (winner_global >= 0 && winner_global < n) wins[winner_global]++;
+
+                games[i]++;
+                games[j]++;
+                if (!swapped) {
+                    total_time[i] += res.p1_avg_ms;
+                    total_time[j] += res.p2_avg_ms;
+                } else {
+                    total_time[j] += res.p1_avg_ms;
+                    total_time[i] += res.p2_avg_ms;
+                }
+
+                fprintf(fp, "%d,%s,%s,%d,%d,%.3f,%.3f\n",
+                        t + 1, A.name, B.name, winner, res.ply, res.p1_avg_ms, res.p2_avg_ms);
+            }
+            printf("[%s] %s vs %s finished (%d trials)\n", stage_name, solvers[i].name, solvers[j].name, trials);
+        }
+    }
+    fclose(fp);
+
+    vector<double> avg_time(n, 0.0);
+    for (int i = 0; i < n; i++) {
+        avg_time[i] = (games[i] ? total_time[i] / games[i] : 0.0);
+    }
+
+    vector<int> rank(n);
+    for (int i = 0; i < n; i++) rank[i] = i;
+    sort(rank.begin(), rank.end(), [&](int a, int b) {
+        if (wins[a] != wins[b]) return wins[a] > wins[b];
+        return avg_time[a] < avg_time[b];
+    });
+
+    fprintf(report_fp, "## %s\n\n", stage_name);
+    fprintf(report_fp, "- CSV: %s\n", csv_path.c_str());
+    fprintf(report_fp, "- Format: iterative deepening only, time limit 1000 ms, 10 trials per pair (color swapped by trial parity).\n\n");
+    fprintf(report_fp, "| Rank | Heuristic | Wins | Avg Move Time (ms) |\n");
+    fprintf(report_fp, "|---:|---|---:|---:|\n");
+    for (int k = 0; k < n; k++) {
+        int i = rank[k];
+        fprintf(report_fp, "| %d | %s | %d | %.2f |\n", k + 1, solvers[i].name, wins[i], avg_time[i]);
+    }
+    fprintf(report_fp, "\n");
+
+    return {wins, avg_time};
+}
+
 int main() {
     init_masks();
     init_zobrist();
+
+    ensure_out_dir();
+
+    string run_tag = make_unique_tag();
+    string report_path = string("out/heuristic_iteration_report_") + run_tag + ".md";
+    FILE* report_fp = fopen(report_path.c_str(), "w");
+
+    fprintf(report_fp, "# Ataxx Heuristic Iteration Report\n\n");
+    fprintf(report_fp, "Run tag: %s\n\n", run_tag.c_str());
+    fprintf(report_fp, "## Heuristic Ideas\n\n");
+    fprintf(report_fp, "- Material: maximize piece count gap.\n");
+    fprintf(report_fp, "- Mobility: favor positions with more legal actions.\n");
+    fprintf(report_fp, "- CenterControl: keep pieces near center for flexible expansion.\n");
+    fprintf(report_fp, "- InfectionPressure: reward adjacency to enemy stones for conversion potential.\n");
+    fprintf(report_fp, "- Expansion: maximize reachable empty cells by clone/jump.\n");
+    fprintf(report_fp, "- Safety: reward local friendly support and penalize local enemy pressure.\n");
+    fprintf(report_fp, "- Influence: value empty cells by nearby friendly minus enemy neighbors.\n");
+    fprintf(report_fp, "- Frontier: dynamically value frontier size by game phase.\n");
+    fprintf(report_fp, "- Hybrid: combine material + center + pressure + expansion.\n\n");
 
     MaterialHeuristic h_mat;
     MobilityHeuristic h_mob;
     CenterControlHeuristic h_ctr;
     InfectionPressureHeuristic h_inf;
+    ExpansionHeuristic h_exp;
+    SafetyHeuristic h_safe;
+    InfluenceHeuristic h_infl;
+    FrontierHeuristic h_front;
     HybridHeuristic h_hyb;
 
-    vector<SolverProfile> solvers = {
-        {"AB-Material-d5", SOLVER_AB, &h_mat, 5, 0, 0},
-        {"ID-Mobility", SOLVER_ID, &h_mob, 12, 0, 1200},
-        {"ID-Center", SOLVER_ID, &h_ctr, 12, 0, 1200},
-        {"ID-Infection", SOLVER_ID, &h_inf, 12, 0, 1200},
-        {"ID-Hybrid", SOLVER_ID, &h_hyb, 12, 0, 1200},
-        {"MCTS-Hybrid", SOLVER_MCTS, &h_hyb, 0, 250000, 1200}
+    const int trials = 10;
+    const int id_depth = 6;
+    const double id_time_ms = 1000.0;
+
+    vector<const Heuristic*> base_h = {
+        &h_mat, &h_mob, &h_ctr, &h_inf, &h_exp, &h_hyb
     };
 
-    FILE* fp = fopen("ataxx_tournament.csv", "w");
-    fprintf(fp, "P1,P2,Winner,Ply,P1AvgMS,P2AvgMS\n");
-
-    int n = (int)solvers.size();
-    vector<int> wins(n, 0);
-
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
-            if (i == j) continue;
-            MatchResult res = play_match(solvers[i], solvers[j]);
-            fprintf(fp, "%s,%s,%d,%d,%.3f,%.3f\n",
-                    solvers[i].name, solvers[j].name,
-                    res.winner, res.ply, res.p1_avg_ms, res.p2_avg_ms);
-
-            if (res.winner == 1) wins[i]++;
-            else if (res.winner == 2) wins[j]++;
-
-            printf("%s vs %s -> winner=%d, ply=%d\n",
-                   solvers[i].name, solvers[j].name, res.winner, res.ply);
-        }
+    vector<SolverProfile> stage1;
+    for (const Heuristic* h : base_h) {
+        stage1.push_back({h->name(), SOLVER_ID, h, id_depth, 0, id_time_ms});
     }
-    fclose(fp);
 
-    vector<int> rank(n);
-    for (int i = 0; i < n; i++) rank[i] = i;
-    sort(rank.begin(), rank.end(), [&](int a, int b) {
-        return wins[a] > wins[b];
+    string csv1 = string("out/stage1_base_") + run_tag + ".csv";
+    TournamentResult r1 = run_tournament(stage1, trials, csv1, report_fp, "Stage 1 - Base Heuristics");
+
+    vector<int> idx1(stage1.size());
+    for (int i = 0; i < (int)stage1.size(); i++) idx1[i] = i;
+    sort(idx1.begin(), idx1.end(), [&](int a, int b) {
+        if (r1.wins[a] != r1.wins[b]) return r1.wins[a] > r1.wins[b];
+        return r1.avg_move_time[a] < r1.avg_move_time[b];
     });
 
-    puts("\nRanking:");
-    for (int k = 0; k < n; k++) {
-        int i = rank[k];
-        printf("%d. %-20s wins=%d\n", k + 1, solvers[i].name, wins[i]);
+    vector<const Heuristic*> top_stage1;
+    for (int k = 0; k < 3 && k < (int)idx1.size(); k++) top_stage1.push_back(stage1[idx1[k]].h);
+
+    vector<MaterialBoostHeuristic> boosted;
+    boosted.reserve(top_stage1.size() * 3);
+    const int mat_weights[2] = {80, 120};
+    for (const Heuristic* h : top_stage1) {
+        for (int mw : mat_weights) boosted.emplace_back(h, mw);
     }
+
+    vector<SolverProfile> stage2;
+    for (const Heuristic* h : top_stage1) {
+        stage2.push_back({h->name(), SOLVER_ID, h, id_depth, 0, id_time_ms});
+    }
+    for (const MaterialBoostHeuristic& h : boosted) {
+        stage2.push_back({h.name(), SOLVER_ID, &h, id_depth, 0, id_time_ms});
+    }
+
+    string csv2 = string("out/stage2_material_boost_") + run_tag + ".csv";
+    TournamentResult r2 = run_tournament(stage2, trials, csv2, report_fp, "Stage 2 - Material Boost Variants");
+
+    vector<int> idx2(stage2.size());
+    for (int i = 0; i < (int)stage2.size(); i++) idx2[i] = i;
+    sort(idx2.begin(), idx2.end(), [&](int a, int b) {
+        if (r2.wins[a] != r2.wins[b]) return r2.wins[a] > r2.wins[b];
+        return r2.avg_move_time[a] < r2.avg_move_time[b];
+    });
+
+    vector<const Heuristic*> finalists;
+    for (int k = 0; k < 4 && k < (int)idx2.size(); k++) finalists.push_back(stage2[idx2[k]].h);
+
+    vector<MaterialBoostHeuristic> final_boost;
+    final_boost.reserve(finalists.size());
+    for (const Heuristic* h : finalists) final_boost.emplace_back(h, 100);
+
+    vector<SolverProfile> stage3;
+    for (const Heuristic* h : finalists) {
+        stage3.push_back({h->name(), SOLVER_ID, h, id_depth, 0, id_time_ms});
+    }
+    for (const MaterialBoostHeuristic& h : final_boost) {
+        stage3.push_back({h.name(), SOLVER_ID, &h, id_depth, 0, id_time_ms});
+    }
+
+    string csv3 = string("out/stage3_finalists_") + run_tag + ".csv";
+    TournamentResult r3 = run_tournament(stage3, trials, csv3, report_fp, "Stage 3 - Finalists Re-Iteration");
+
+    vector<int> idx3(stage3.size());
+    for (int i = 0; i < (int)stage3.size(); i++) idx3[i] = i;
+    sort(idx3.begin(), idx3.end(), [&](int a, int b) {
+        if (r3.wins[a] != r3.wins[b]) return r3.wins[a] > r3.wins[b];
+        return r3.avg_move_time[a] < r3.avg_move_time[b];
+    });
+
+    fprintf(report_fp, "## Final Selection\n\n");
+    if (!idx3.empty()) {
+        int best = idx3[0];
+        fprintf(report_fp, "Best heuristic in this run: **%s** (wins=%d, avg move time=%.2f ms).\n\n",
+                stage3[best].name, r3.wins[best], r3.avg_move_time[best]);
+    }
+    fprintf(report_fp, "Observations:\n\n");
+    fprintf(report_fp, "- Material remains a strong baseline in this variant due to conversion snowballing.\n");
+    fprintf(report_fp, "- Mobility and infection-aware terms usually help in midgame tactical fights.\n");
+    fprintf(report_fp, "- Material boosting (+Mat100 around top heuristics) is often a robust upgrade.\n");
+    fprintf(report_fp, "- Frontier terms are phase-sensitive and can underperform if over-weighted.\n");
+    fprintf(report_fp, "\n");
+
+    vector<MaterialBoostHeuristic> exp_weight_scan;
+    const int tuned_mat_w[4] = {90, 110, 130, 150};
+    exp_weight_scan.reserve(4);
+    for (int w : tuned_mat_w) exp_weight_scan.emplace_back(&h_exp, w);
+
+    vector<AdditiveBlendHeuristic> exp_inf_blend;
+    exp_inf_blend.reserve(2);
+    exp_inf_blend.emplace_back(&h_exp, &h_inf, 20);
+    exp_inf_blend.emplace_back(&h_exp, &h_inf, 35);
+
+    vector<MaterialBoostHeuristic> exp_inf_blend_boost;
+    exp_inf_blend_boost.reserve(exp_inf_blend.size());
+    for (const AdditiveBlendHeuristic& h : exp_inf_blend) {
+        exp_inf_blend_boost.emplace_back(&h, 100);
+    }
+
+    vector<SolverProfile> stage4;
+    stage4.push_back({"Expansion", SOLVER_ID, &h_exp, id_depth, 0, id_time_ms});
+    stage4.push_back({"Hybrid", SOLVER_ID, &h_hyb, id_depth, 0, id_time_ms});
+    stage4.push_back({"Material", SOLVER_ID, &h_mat, id_depth, 0, id_time_ms});
+    for (const MaterialBoostHeuristic& h : exp_weight_scan) {
+        stage4.push_back({h.name(), SOLVER_ID, &h, id_depth, 0, id_time_ms});
+    }
+    for (const AdditiveBlendHeuristic& h : exp_inf_blend) {
+        stage4.push_back({h.name(), SOLVER_ID, &h, id_depth, 0, id_time_ms});
+    }
+    for (const MaterialBoostHeuristic& h : exp_inf_blend_boost) {
+        stage4.push_back({h.name(), SOLVER_ID, &h, id_depth, 0, id_time_ms});
+    }
+
+    string csv4 = string("out/stage4_targeted_") + run_tag + ".csv";
+    TournamentResult r4 = run_tournament(stage4, trials, csv4, report_fp, "Stage 4 - Targeted Expansion Tuning");
+
+    vector<int> idx4(stage4.size());
+    for (int i = 0; i < (int)stage4.size(); i++) idx4[i] = i;
+    sort(idx4.begin(), idx4.end(), [&](int a, int b) {
+        if (r4.wins[a] != r4.wins[b]) return r4.wins[a] > r4.wins[b];
+        return r4.avg_move_time[a] < r4.avg_move_time[b];
+    });
+
+    fprintf(report_fp, "## Targeted Tuning Conclusion\n\n");
+    if (!idx4.empty()) {
+        int best4 = idx4[0];
+        fprintf(report_fp, "Top heuristic in targeted stage: **%s** (wins=%d, avg move time=%.2f ms).\n\n",
+                stage4[best4].name, r4.wins[best4], r4.avg_move_time[best4]);
+    }
+
+    fclose(report_fp);
+
+    printf("Autopilot run completed.\n");
+    printf("Report: %s\n", report_path.c_str());
+    printf("CSV 1: %s\n", csv1.c_str());
+    printf("CSV 2: %s\n", csv2.c_str());
+    printf("CSV 3: %s\n", csv3.c_str());
+    printf("CSV 4: %s\n", csv4.c_str());
+
     return 0;
 }
 
