@@ -13,12 +13,6 @@
 #include <utility>
 #include <vector>
 
-#ifdef _WIN32
-#include <direct.h>
-#else
-#include <sys/stat.h>
-#endif
-
 using namespace std;
 
 #ifndef MAX_M
@@ -1313,14 +1307,6 @@ struct TournamentResult {
     vector<double> avg_move_time;
 };
 
-static void ensure_out_dir() {
-#ifdef _WIN32
-    _mkdir("out");
-#else
-    mkdir("out", 0755);
-#endif
-}
-
 static string make_unique_tag() {
     long long ms = chrono::duration_cast<chrono::milliseconds>(
         chrono::system_clock::now().time_since_epoch()
@@ -1478,7 +1464,6 @@ TournamentResult run_tournament(
 int main() {
     init_masks();
     init_zobrist();
-    ensure_out_dir();
 
     string run_tag = make_unique_tag();
     string report_path = string("out/heuristic_iteration_report_") + run_tag + ".md";
