@@ -59,9 +59,8 @@ struct Bitboard {
     U64 p1;
     U64 p2;
     int16 ply;
-    int8 pass_count;
 
-    Bitboard() : p1(0ULL), p2(0ULL), ply(0), pass_count(0) {}
+    Bitboard() : p1(0ULL), p2(0ULL), ply(0) {}
 };
 
 /* Transposition Table */
@@ -95,8 +94,6 @@ array<U64, 64> g_jump_dst_mask; // Jump destination squares for each position
 
 U64 g_zob[64][3];
 U64 g_zob_side;
-U64 g_zob_ply[MAX_STEPS + 1];
-U64 g_zob_pass[3];
 bool g_zob_ready = false;
 
 /* Search timeout */
@@ -196,12 +193,10 @@ void init_zobrist() {
         g_zob[i][2] = g_rng();
     }
     g_zob_side = g_rng();
-    for (int i = 0; i <= MAX_STEPS; i++) g_zob_ply[i] = g_rng();
-    for (int i = 0; i < 3; i++) g_zob_pass[i] = g_rng();
     g_zob_ready = true;
 }
 
-inline U64 state_hash(const Bitboard& s, int8 player) {
+inline U64 get_hash(const Bitboard& s, int8 player) {
     U64 h = 0ULL;
     U64 t = s.p1;
     while (t) {
@@ -216,8 +211,26 @@ inline U64 state_hash(const Bitboard& s, int8 player) {
         h ^= g_zob[idx][2];
     }
     if (player == 2) h ^= g_zob_side;
-    if (s.ply >= 0 && s.ply <= MAX_STEPS) h ^= g_zob_ply[s.ply];
-    h ^= g_zob_pass[s.pass_count];
+    return h;
+}
+
+inline U64 incremental_hash(U64 old_hash, const Bitboard& old_s, const Bitboard& new_s) {
+    U64 h = old_hash ^ g_zob_side;
+
+    U64 p1_diff = old_s.p1 ^ new_s.p1;
+    while (p1_diff) {
+        int idx = lsb_index(p1_diff);
+        p1_diff &= (p1_diff - 1);
+        h ^= g_zob[idx][1];
+    }
+
+    U64 p2_diff = old_s.p2 ^ new_s.p2;
+    while (p2_diff) {
+        int idx = lsb_index(p2_diff);
+        p2_diff &= (p2_diff - 1);
+        h ^= g_zob[idx][2];
+    }
+
     return h;
 }
 
@@ -266,7 +279,6 @@ Bitboard board_to_state(const int board[MAX_M][MAX_N], int step) {
         }
     }
     s.ply = step - 1;
-    s.pass_count = 0;
     return s;
 }
 
@@ -278,7 +290,7 @@ int check_win(const Bitboard& s, int8 player) {
     if (p2 == 0) return (player == 1 ? WIN_SCORE : -WIN_SCORE);
 
     U64 occ = s.p1 | s.p2;
-    if (occ == g_valid_mask || s.ply >= MAX_STEPS || s.pass_count >= 2) {
+    if (occ == g_valid_mask || s.ply >= MAX_STEPS) {
         if (p1 > p2) return (player == 1 ? WIN_SCORE : -WIN_SCORE);
         if (p2 > p1) return (player == 2 ? WIN_SCORE : -WIN_SCORE);
         return 0;
@@ -365,14 +377,12 @@ Bitboard apply_move(const Bitboard& s, int8 player, const Move& mv) {
     }
 
     ns.ply++;
-    ns.pass_count = 0;
     return ns;
 }
 
 Bitboard apply_pass(const Bitboard& s) {
     Bitboard ns = s;
     ns.ply++;
-    ns.pass_count = min(2, s.pass_count + 1);
     return ns;
 }
 
@@ -991,7 +1001,7 @@ int ab_negamax(const Bitboard& s, U64 hash, int depth, int max_depth, int8 playe
 
     if (moves.empty()) {
         Bitboard ns = apply_pass(s);
-        U64 nh = state_hash(ns, (3 - player));
+        U64 nh = incremental_hash(hash, s, ns);
         return -ab_negamax(ns, nh, depth + 1, max_depth, (3 - player), h, -beta, -alpha);
     }
 
@@ -1005,7 +1015,7 @@ int ab_negamax(const Bitboard& s, U64 hash, int depth, int max_depth, int8 playe
     // TT_EXACT means the move is the best move for sure; TT_LOWER means the move is at least this good; TT_UPPER means the move is at most this good.
     for (const Move& mv : moves) {
         Bitboard ns = apply_move(s, player, mv);
-        U64 nh = state_hash(ns, (3 - player));
+        U64 nh = incremental_hash(hash, s, ns);
         int score = -ab_negamax(ns, nh, depth + 1, max_depth, (3 - player), h, -beta, -alpha);
         if (g_time_out) return 0;
 
@@ -1042,11 +1052,11 @@ Move ab_solver(const Bitboard& s, int8 player, const Heuristic* h, int max_depth
     Move best = moves[0];
     int alpha = -INF_SCORE;
     int beta = INF_SCORE;
-    U64 hash = state_hash(s, player);
+    U64 hash = get_hash(s, player);
 
     for (const Move& mv : moves) {
         Bitboard ns = apply_move(s, player, mv);
-        U64 nh = state_hash(ns, (3 - player));
+        U64 nh = incremental_hash(hash, s, ns);
         int score = -ab_negamax(ns, nh, 1, max_depth, (3 - player), h, -beta, -alpha);
         if (score > alpha) {
             alpha = score;
@@ -1071,7 +1081,7 @@ Move iterative_deepening_solver(const Bitboard& s, int8 player, const Heuristic*
     g_time_limit_ms = time_limit_ms;
 
     Move best = root_moves[0];
-    U64 root_hash = state_hash(s, player);
+    U64 root_hash = get_hash(s, player);
     int n_moves = root_moves.size();
 
     for (int depth = 1; depth <= max_depth; depth++) {
@@ -1092,7 +1102,7 @@ Move iterative_deepening_solver(const Bitboard& s, int8 player, const Heuristic*
 
         for (Move& mv : root_moves) {
             Bitboard ns = apply_move(s, player, mv);
-            U64 nh = state_hash(ns, (3 - player));
+            U64 nh = incremental_hash(root_hash, s, ns);
             int score = -ab_negamax(ns, nh, 1, depth, (3 - player), h, -beta, -max(alpha, best_score_depth));
 
             if (g_time_out) {
@@ -1147,7 +1157,7 @@ int winner_from_state(const Bitboard& s) {
     if (p1 == 0) return 2;
     if (p2 == 0) return 1;
     U64 occ = s.p1 | s.p2;
-    if (occ == g_valid_mask || s.ply >= MAX_STEPS || s.pass_count >= 2) {
+    if (occ == g_valid_mask || s.ply >= MAX_STEPS) {
         if (p1 > p2) return 1;
         if (p2 > p1) return 2;
         return 0;
@@ -1349,7 +1359,6 @@ Bitboard initial_state() {
     s.p1 = bit_at(0, 0) | bit_at(6, 6);
     s.p2 = bit_at(0, 6) | bit_at(6, 0);
     s.ply = 0;
-    s.pass_count = 0;
     return s;
 }
 
