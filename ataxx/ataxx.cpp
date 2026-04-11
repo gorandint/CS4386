@@ -23,13 +23,14 @@ using namespace std;
 
 typedef unsigned long long U64;
 typedef char int8;
+typedef int16_t int16;
 
 const int WIN_SCORE = 100000000;
 const int INF_SCORE = 200000000;
 const int MAX_STEPS = 200;
 const int MAX_DEPTH = 64;
 
-enum TTFlag { TT_EXACT = 0, TT_LOWER = 1, TT_UPPER = 2 };
+/* Move */
 
 struct Move {
     int8 sr;
@@ -52,14 +53,20 @@ inline bool operator<(const Move& a, const Move& b) {
     return a.pri > b.pri;
 }
 
-struct State {
+/* Bitboard */
+
+struct Bitboard {
     U64 p1;
     U64 p2;
-    int16_t ply;
+    int16 ply;
     int8 pass_count;
 
-    State() : p1(0ULL), p2(0ULL), ply(0), pass_count(0) {}
+    Bitboard() : p1(0ULL), p2(0ULL), ply(0), pass_count(0) {}
 };
+
+/* Transposition Table */
+
+enum TTFlag { TT_EXACT = 0, TT_LOWER = 1, TT_UPPER = 2 };
 
 struct TTEntry {
     U64 key;
@@ -74,34 +81,41 @@ struct TTEntry {
 
 const int TT_SIZE = 1 << 19;
 const int TT_MASK = TT_SIZE - 1;
-static TTEntry g_tt[TT_SIZE];
-static Move g_killer[MAX_DEPTH][2];
+TTEntry g_tt[TT_SIZE];
+Move g_killer[MAX_DEPTH][2];
 
-static U64 g_valid_mask = 0ULL;
-static array<U64, 64> g_adj_mask;
-static array<U64, 64> g_clone_dst_mask;
-static array<U64, 64> g_jump_dst_mask;
+/* Mask for checking valid positions and move generation */
 
-static U64 g_zob[64][3];
-static U64 g_zob_side;
-static U64 g_zob_ply[MAX_STEPS + 1];
-static U64 g_zob_pass[3];
-static bool g_zob_ready = false;
+U64 g_valid_mask = 0ULL; // (0,0) to (6,6)
+array<U64, 64> g_adj_mask; // 8-directional adjacent squares for each position
+array<U64, 64> g_clone_dst_mask; // Clone destination squares for each position
+array<U64, 64> g_jump_dst_mask; // Jump destination squares for each position
 
-static bool g_time_out = false;
-static chrono::steady_clock::time_point g_start_time;
-static double g_time_limit_ms = 0.0;
+/* Zobrist Hashing */
 
-static mt19937_64 g_rng(
-    (uint64_t)chrono::steady_clock::now().time_since_epoch().count() ^
-    0x9e3779b97f4a7c15ULL
-);
+U64 g_zob[64][3];
+U64 g_zob_side;
+U64 g_zob_ply[MAX_STEPS + 1];
+U64 g_zob_pass[3];
+bool g_zob_ready = false;
+
+/* Search timeout */
+
+bool g_time_out = false;
+chrono::steady_clock::time_point g_start_time;
+double g_time_limit_ms = 0.0;
+
+mt19937_64 g_rng((uint64_t)chrono::steady_clock::now().time_since_epoch().count());
+
+/* Bit operations */
 
 inline int lsb_index(U64 x) {
+    // Get the index of the least significant set bit (lowest 1)
     return __builtin_ctzll(x);
 }
 
 inline int popcnt(U64 x) {
+    // Count the number of 1 bits
     return __builtin_popcountll(x);
 }
 
@@ -109,7 +123,7 @@ inline U64 bit_at(int r, int c) {
     return 1ULL << (r * 8 + c);
 }
 
-inline int8 piece_at(const State& s, int r, int c) {
+inline int8 piece_at(const Bitboard& s, int r, int c) {
     U64 b = bit_at(r, c);
     if (s.p1 & b) return 1;
     if (s.p2 & b) return 2;
@@ -117,10 +131,13 @@ inline int8 piece_at(const State& s, int r, int c) {
 }
 
 inline int center_dist2(int r, int c) {
+    // Get squared distance to center (3,3)
     int dr = r - 3;
     int dc = c - 3;
     return dr * dr + dc * dc;
 }
+
+/* Mask, TT, Killer Initialization */
 
 void init_masks() {
     g_valid_mask = 0ULL;
@@ -184,7 +201,7 @@ void init_zobrist() {
     g_zob_ready = true;
 }
 
-inline U64 state_hash(const State& s, int8 player) {
+inline U64 state_hash(const Bitboard& s, int8 player) {
     U64 h = 0ULL;
     U64 t = s.p1;
     while (t) {
@@ -237,7 +254,24 @@ inline void killer_update(int depth, const Move& mv) {
     g_killer[depth][0] = mv;
 }
 
-inline int evaluate_terminal(const State& s, int8 player) {
+/* Game State */
+
+Bitboard board_to_state(const int board[MAX_M][MAX_N], int step) {
+    Bitboard s;
+    for (int r = 0; r < 7; r++) {
+        for (int c = 0; c < 7; c++) {
+            U64 b = bit_at(r, c);
+            if (board[r][c] == 1) s.p1 |= b;
+            else if (board[r][c] == 2) s.p2 |= b;
+        }
+    }
+    s.ply = step - 1;
+    s.pass_count = 0;
+    return s;
+}
+
+int check_win(const Bitboard& s, int8 player) {
+    // Check winning and terminal conditions. +WIN_SCORE for P1 win, -WIN_SCORE for P2 win, 0 for draw, INF_SCORE for non-terminal.
     int p1 = popcnt(s.p1);
     int p2 = popcnt(s.p2);
     if (p1 == 0) return (player == 2 ? WIN_SCORE : -WIN_SCORE);
@@ -252,7 +286,8 @@ inline int evaluate_terminal(const State& s, int8 player) {
     return INF_SCORE;
 }
 
-void generate_moves(const State& s, int8 player, vector<Move>& moves, bool any_one = false) {
+void generate_moves(const Bitboard& s, int8 player, vector<Move>& moves, bool any_one = false) {
+    // Generate all valid moves for the given player. If any_one is true, return the first valid move found.
     moves.clear();
     U64 me = (player == 1 ? s.p1 : s.p2);
     U64 occ = s.p1 | s.p2;
@@ -270,7 +305,7 @@ void generate_moves(const State& s, int8 player, vector<Move>& moves, bool any_o
             clone_targets &= (clone_targets - 1);
             int dr = didx / 8;
             int dc = didx % 8;
-            Move mv((int8)sr, (int8)sc, (int8)dr, (int8)dc, 1);
+            Move mv(sr, sc, dr, dc, 1);
 
             U64 cap_mask = g_adj_mask[didx] & (player == 1 ? s.p2 : s.p1);
             int cap = popcnt(cap_mask);
@@ -285,7 +320,7 @@ void generate_moves(const State& s, int8 player, vector<Move>& moves, bool any_o
             jump_targets &= (jump_targets - 1);
             int dr = didx / 8;
             int dc = didx % 8;
-            Move mv((int8)sr, (int8)sc, (int8)dr, (int8)dc, 0);
+            Move mv(sr, sc, dr, dc, 0);
 
             U64 cap_mask = g_adj_mask[didx] & (player == 1 ? s.p2 : s.p1);
             int cap = popcnt(cap_mask);
@@ -296,8 +331,18 @@ void generate_moves(const State& s, int8 player, vector<Move>& moves, bool any_o
     }
 }
 
-State apply_move(const State& s, int8 player, const Move& mv) {
-    State ns = s;
+void order_moves(vector<Move>& moves, int depth, const Move* tt_best) {
+    // Priority: tt_best > killer > others
+    for (Move& mv : moves) {
+        if (tt_best && mv == *tt_best) mv.pri += 2000000;
+        if (depth < MAX_DEPTH && mv == g_killer[depth][0]) mv.pri += 500000;
+        else if (depth < MAX_DEPTH && mv == g_killer[depth][1]) mv.pri += 300000;
+    }
+    sort(moves.begin(), moves.end());
+}
+
+Bitboard apply_move(const Bitboard& s, int8 player, const Move& mv) {
+    Bitboard ns = s;
     U64 src_b = bit_at(mv.sr, mv.sc);
     U64 dst_b = bit_at(mv.dr, mv.dc);
 
@@ -324,21 +369,26 @@ State apply_move(const State& s, int8 player, const Move& mv) {
     return ns;
 }
 
-State apply_pass(const State& s) {
-    State ns = s;
+Bitboard apply_pass(const Bitboard& s) {
+    Bitboard ns = s;
     ns.ply++;
-    ns.pass_count = (int8)min(2, (int)s.pass_count + 1);
+    ns.pass_count = min(2, s.pass_count + 1);
     return ns;
 }
+
+/* Heuristic
+estimate() returns the advantage of P1.
+evaluate() will be used externally, and it will handle player side and check winning state before calling estimate().
+*/
 
 class Heuristic {
 public:
     virtual ~Heuristic() {}
     virtual const char* name() const = 0;
-    virtual int estimate(const State& s) const = 0; // positive means P1 better
+    virtual int estimate(const Bitboard& s) const = 0; // positive means P1 better
 
-    int evaluate(const State& s, int8 player) const {
-        int terminal = evaluate_terminal(s, player);
+    int evaluate(const Bitboard& s, int8 player) const {
+        int terminal = check_win(s, player);
         if (terminal != INF_SCORE) return terminal;
         int val = estimate(s);
         return (player == 1 ? val : -val);
@@ -348,7 +398,7 @@ public:
 class MaterialHeuristic : public Heuristic {
 public:
     const char* name() const { return "Material"; }
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         return (popcnt(s.p1) - popcnt(s.p2)) * 50;
     }
 };
@@ -356,18 +406,18 @@ public:
 class MobilityHeuristic : public Heuristic {
 public:
     const char* name() const { return "Mobility"; }
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         vector<Move> m1, m2;
         generate_moves(s, 1, m1);
         generate_moves(s, 2, m2);
-        return (popcnt(s.p1) - popcnt(s.p2)) * 50 + ((int)m1.size() - (int)m2.size()) * 6;
+        return (popcnt(s.p1) - popcnt(s.p2)) * 50 + (m1.size() - m2.size()) * 6;
     }
 };
 
 class CenterControlHeuristic : public Heuristic {
 public:
     const char* name() const { return "CenterControl"; }
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         int score = (popcnt(s.p1) - popcnt(s.p2)) * 50;
         U64 t = s.p1;
         while (t) {
@@ -392,7 +442,7 @@ public:
 class InfectionPressureHeuristic : public Heuristic {
 public:
     const char* name() const { return "InfectionPressure"; }
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         int score = (popcnt(s.p1) - popcnt(s.p2)) * 50;
 
         U64 t = s.p1;
@@ -421,7 +471,7 @@ public:
 class ExpansionHeuristic : public Heuristic {
 public:
     const char* name() const { return "Expansion"; }
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         int score = (popcnt(s.p1) - popcnt(s.p2)) * 50;
         U64 occ = s.p1 | s.p2;
         U64 empty = g_valid_mask & (~occ);
@@ -447,7 +497,7 @@ public:
 class SafetyHeuristic : public Heuristic {
 public:
     const char* name() const { return "Safety"; }
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         int score = (popcnt(s.p1) - popcnt(s.p2)) * 50;
         U64 t = s.p1;
         while (t) {
@@ -472,7 +522,7 @@ public:
 class InfluenceHeuristic : public Heuristic {
 public:
     const char* name() const { return "Influence"; }
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         int score = (popcnt(s.p1) - popcnt(s.p2)) * 50;
         U64 occ = s.p1 | s.p2;
         U64 empty = g_valid_mask & (~occ);
@@ -491,7 +541,7 @@ public:
 class FrontierHeuristic : public Heuristic {
 public:
     const char* name() const { return "Frontier"; }
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         int p1n = popcnt(s.p1), p2n = popcnt(s.p2);
         int empties = 49 - p1n - p2n;
         int score = (p1n - p2n) * 50;
@@ -525,7 +575,7 @@ public:
 class HybridHeuristic : public Heuristic {
 public:
     const char* name() const { return "Hybrid"; }
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         int score = (popcnt(s.p1) - popcnt(s.p2)) * 50;
         U64 occ = s.p1 | s.p2;
         U64 empty = g_valid_mask & (~occ);
@@ -559,7 +609,7 @@ private:
 public:
     const char* name() const { return "PositionWeight"; }
 
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         int score = (popcnt(s.p1) - popcnt(s.p2)) * 50;
         U64 p1 = s.p1;
         U64 p2 = s.p2;
@@ -595,7 +645,7 @@ class PotentialConversionHeuristic : public Heuristic {
 public:
     const char* name() const { return "PotentialConversion"; }
 
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         int score = (popcnt(s.p1) - popcnt(s.p2)) * 50;
         U64 p1 = s.p1;
         U64 p2 = s.p2;
@@ -613,10 +663,10 @@ public:
     }
 };
 
-static array<vector<pair<int, int>>, 64> g_control_terms;
-static bool g_control_terms_ready = false;
+array<vector<pair<int, int>>, 64> g_control_terms;
+bool g_control_terms_ready = false;
 
-static void init_control_terms() {
+void init_control_terms() {
     if (g_control_terms_ready) return;
     for (int sr = 0; sr < 7; sr++) {
         for (int sc = 0; sc < 7; sc++) {
@@ -641,7 +691,7 @@ public:
     ControlAreaHeuristic() { init_control_terms(); }
     const char* name() const { return "ControlArea"; }
 
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         int score = (popcnt(s.p1) - popcnt(s.p2)) * 50;
         U64 p1 = s.p1;
         U64 p2 = s.p2;
@@ -671,7 +721,7 @@ class AggressionHeuristic : public Heuristic {
 public:
     const char* name() const { return "Aggression"; }
 
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         int score = (popcnt(s.p1) - popcnt(s.p2)) * 50;
 
         U64 p1 = s.p1;
@@ -719,7 +769,7 @@ class AdaptiveHeuristic : public Heuristic {
 public:
     const char* name() const { return "Adaptive"; }
 
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         int p1n = popcnt(s.p1);
         int p2n = popcnt(s.p2);
         int occupied = p1n + p2n;
@@ -755,9 +805,9 @@ public:
         }
 
         int score = (p1n - p2n) * 50;
-        int w_center = (int)(28 - 10 * phase);
-        int w_exp = (int)(34 - 24 * phase);
-        int w_pressure = (int)(12 + 20 * phase);
+        int w_center = (28 - 10 * phase);
+        int w_exp = (34 - 24 * phase);
+        int w_pressure = (12 + 20 * phase);
         score += center * w_center / 20;
         score += expansion * w_exp / 20;
         score += pressure * w_pressure / 20;
@@ -768,7 +818,7 @@ public:
 class CenterExpansionHeuristic : public Heuristic {
 public:
     const char* name() const { return "CenterExpansion"; }
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         int score = (popcnt(s.p1) - popcnt(s.p2)) * 50;
         U64 occ = s.p1 | s.p2;
         U64 empty = g_valid_mask & (~occ);
@@ -800,7 +850,7 @@ public:
 class CenterPressurePCHeuristic : public Heuristic {
 public:
     const char* name() const { return "CenterPressurePC"; }
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         int score = (popcnt(s.p1) - popcnt(s.p2)) * 50;
         U64 t = s.p1;
         while (t) {
@@ -829,7 +879,7 @@ public:
 class PressureExpansionHeuristic : public Heuristic {
 public:
     const char* name() const { return "PressureExpansion"; }
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         int score = (popcnt(s.p1) - popcnt(s.p2)) * 50;
         U64 occ = s.p1 | s.p2;
         U64 empty = g_valid_mask & (~occ);
@@ -854,27 +904,29 @@ public:
     }
 };
 
-class MaterialBoostHeuristic : public Heuristic {
+/* Add (material_w_ * Material difference) to a base heuristic */
+
+class MaterialPlusHeuristic : public Heuristic {
 private:
-    const Heuristic* base_;
+    const Heuristic* h_base;
     int material_w_;
     string name_;
 
 public:
-    MaterialBoostHeuristic(const Heuristic* base, int material_w)
-        : base_(base), material_w_(material_w) {
-        name_ = string(base_->name()) + "+Mat" + to_string(material_w_);
+    MaterialPlusHeuristic(const Heuristic* base, int material_w)
+        : h_base(base), material_w_(material_w) {
+        name_ = string(h_base->name()) + "+Mat" + to_string(material_w_);
     }
 
     const char* name() const { return name_.c_str(); }
 
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         int mat = popcnt(s.p1) - popcnt(s.p2);
-        return base_->estimate(s) + material_w_ * mat;
+        return h_base->estimate(s) + material_w_ * mat;
     }
 };
 
-class AdditiveBlendHeuristic : public Heuristic {
+class APlusBHeuristic : public Heuristic {
 private:
     const Heuristic* a_;
     const Heuristic* b_;
@@ -883,39 +935,32 @@ private:
     string name_;
 
 public:
-    AdditiveBlendHeuristic(const Heuristic* a, const Heuristic* b, int w_b, int scale = 100)
+    APlusBHeuristic(const Heuristic* a, const Heuristic* b, int w_b, int scale = 100)
         : a_(a), b_(b), w_b_(w_b), scale_(scale) {
         name_ = string(a_->name()) + "+" + b_->name() + "x" + to_string(w_b_);
     }
 
     const char* name() const { return name_.c_str(); }
 
-    int estimate(const State& s) const {
+    int estimate(const Bitboard& s) const {
         return a_->estimate(s) + (b_->estimate(s) * w_b_) / scale_;
     }
 };
 
-void order_moves(vector<Move>& moves, int depth, const Move* tt_best) {
-    for (Move& mv : moves) {
-        if (tt_best && mv == *tt_best) mv.pri += 2000000;
-        if (depth < MAX_DEPTH && mv == g_killer[depth][0]) mv.pri += 500000;
-        else if (depth < MAX_DEPTH && mv == g_killer[depth][1]) mv.pri += 300000;
-    }
-    sort(moves.begin(), moves.end());
-}
+/* Search framework */
 
-int ab_negamax(const State& s, U64 hash, int depth, int max_depth, int8 player,
+int ab_negamax(const Bitboard& s, U64 hash, int depth, int max_depth, int8 player,
                const Heuristic* h, int alpha, int beta) {
     static int node_count = 0;
-    if (g_time_limit_ms > 0.0 && ((++node_count & 8191) == 0)) {
+    if (g_time_limit_ms > 0.0 && ((++node_count & 8191) == 0)) { // Check time every 8192 nodes
         double elapsed = chrono::duration<double, milli>(
             chrono::steady_clock::now() - g_start_time
         ).count();
         if (elapsed > g_time_limit_ms) g_time_out = true;
     }
-    if (g_time_out) return 0;
+    if (g_time_out) return 0; // Do not trust time-out score, just return 0 to stop search immediately.
 
-    int term = evaluate_terminal(s, player);
+    int term = check_win(s, player);
     if (term != INF_SCORE) {
         if (term > 0) return term - depth;
         if (term < 0) return term + depth;
@@ -945,9 +990,9 @@ int ab_negamax(const State& s, U64 hash, int depth, int max_depth, int8 player,
     generate_moves(s, player, moves);
 
     if (moves.empty()) {
-        State ns = apply_pass(s);
-        U64 nh = state_hash(ns, (int8)(3 - player));
-        return -ab_negamax(ns, nh, depth + 1, max_depth, (int8)(3 - player), h, -beta, -alpha);
+        Bitboard ns = apply_pass(s);
+        U64 nh = state_hash(ns, (3 - player));
+        return -ab_negamax(ns, nh, depth + 1, max_depth, (3 - player), h, -beta, -alpha);
     }
 
     order_moves(moves, depth, has_tt_best ? &tt_best : nullptr);
@@ -957,10 +1002,11 @@ int ab_negamax(const State& s, U64 hash, int depth, int max_depth, int8 player,
     int alpha0 = alpha;
     int flag = TT_UPPER;
 
+    // TT_EXACT means the move is the best move for sure; TT_LOWER means the move is at least this good; TT_UPPER means the move is at most this good.
     for (const Move& mv : moves) {
-        State ns = apply_move(s, player, mv);
-        U64 nh = state_hash(ns, (int8)(3 - player));
-        int score = -ab_negamax(ns, nh, depth + 1, max_depth, (int8)(3 - player), h, -beta, -alpha);
+        Bitboard ns = apply_move(s, player, mv);
+        U64 nh = state_hash(ns, (3 - player));
+        int score = -ab_negamax(ns, nh, depth + 1, max_depth, (3 - player), h, -beta, -alpha);
         if (g_time_out) return 0;
 
         if (score > best_score) {
@@ -971,7 +1017,7 @@ int ab_negamax(const State& s, U64 hash, int depth, int max_depth, int8 player,
             alpha = score;
             flag = TT_EXACT;
         }
-        if (alpha >= beta) {
+        if (alpha >= beta) { // beta-cutoff
             flag = TT_LOWER;
             killer_update(depth, mv);
             break;
@@ -979,11 +1025,11 @@ int ab_negamax(const State& s, U64 hash, int depth, int max_depth, int8 player,
     }
 
     if (best_score <= alpha0) flag = TT_UPPER;
-    tt_store(hash, (int8)remain, (int8)flag, best_score, best_move);
+    tt_store(hash, remain, flag, best_score, best_move);
     return best_score;
 }
 
-Move ab_solver(const State& s, int8 player, const Heuristic* h, int max_depth) {
+Move ab_solver(const Bitboard& s, int8 player, const Heuristic* h, int max_depth) {
     tt_clear();
     killer_clear();
     g_time_out = false;
@@ -999,9 +1045,9 @@ Move ab_solver(const State& s, int8 player, const Heuristic* h, int max_depth) {
     U64 hash = state_hash(s, player);
 
     for (const Move& mv : moves) {
-        State ns = apply_move(s, player, mv);
-        U64 nh = state_hash(ns, (int8)(3 - player));
-        int score = -ab_negamax(ns, nh, 1, max_depth, (int8)(3 - player), h, -beta, -alpha);
+        Bitboard ns = apply_move(s, player, mv);
+        U64 nh = state_hash(ns, (3 - player));
+        int score = -ab_negamax(ns, nh, 1, max_depth, (3 - player), h, -beta, -alpha);
         if (score > alpha) {
             alpha = score;
             best = mv;
@@ -1010,7 +1056,7 @@ Move ab_solver(const State& s, int8 player, const Heuristic* h, int max_depth) {
     return best;
 }
 
-Move iterative_deepening_solver(const State& s, int8 player, const Heuristic* h,
+Move iterative_deepening_solver(const Bitboard& s, int8 player, const Heuristic* h,
                                 int max_depth, double time_limit_ms) {
     tt_clear();
     killer_clear();
@@ -1026,11 +1072,12 @@ Move iterative_deepening_solver(const State& s, int8 player, const Heuristic* h,
 
     Move best = root_moves[0];
     U64 root_hash = state_hash(s, player);
+    int n_moves = root_moves.size();
 
     for (int depth = 1; depth <= max_depth; depth++) {
         if (g_time_out) break;
 
-        for (int i = 0; i < (int)root_moves.size(); i++) {
+        for (int i = 0; i < n_moves; i++) {
             if (root_moves[i] == best) {
                 swap(root_moves[0], root_moves[i]);
                 break;
@@ -1044,12 +1091,9 @@ Move iterative_deepening_solver(const State& s, int8 player, const Heuristic* h,
         bool complete = true;
 
         for (Move& mv : root_moves) {
-            State ns = apply_move(s, player, mv);
-            U64 nh = state_hash(ns, (int8)(3 - player));
-            int score = -ab_negamax(
-                ns, nh, 1, depth, (int8)(3 - player), h,
-                -beta, -max(alpha, best_score_depth)
-            );
+            Bitboard ns = apply_move(s, player, mv);
+            U64 nh = state_hash(ns, (3 - player));
+            int score = -ab_negamax(ns, nh, 1, depth, (3 - player), h, -beta, -max(alpha, best_score_depth));
 
             if (g_time_out) {
                 complete = false;
@@ -1074,7 +1118,7 @@ Move iterative_deepening_solver(const State& s, int8 player, const Heuristic* h,
 }
 
 struct MCTSNode {
-    State s;
+    Bitboard s;
     int8 player;
     Move from_parent;
     MCTSNode* parent;
@@ -1083,7 +1127,7 @@ struct MCTSNode {
     int visits;
     double win_sum;
 
-    MCTSNode(const State& _s, int8 _player, const Move& mv, MCTSNode* p)
+    MCTSNode(const Bitboard& _s, int8 _player, const Move& mv, MCTSNode* p)
         : s(_s), player(_player), from_parent(mv), parent(p), visits(0), win_sum(0.0) {
         generate_moves(s, player, untried);
     }
@@ -1093,11 +1137,11 @@ struct MCTSNode {
     }
 
     bool terminal() const {
-        return evaluate_terminal(s, player) != INF_SCORE;
+        return check_win(s, player) != INF_SCORE;
     }
 };
 
-int winner_from_state(const State& s) {
+int winner_from_state(const Bitboard& s) {
     int p1 = popcnt(s.p1);
     int p2 = popcnt(s.p2);
     if (p1 == 0) return 2;
@@ -1111,20 +1155,21 @@ int winner_from_state(const State& s) {
     return -1;
 }
 
-Move choose_playout_move(const State& s, int8 player, const Heuristic* h, double eps) {
+Move choose_playout_move(const Bitboard& s, int8 player, const Heuristic* h, double eps) {
     vector<Move> moves;
     generate_moves(s, player, moves);
     if (moves.empty()) return Move();
 
-    double r = (double)(g_rng() % 1000000) / 1000000.0;
-    if (h == nullptr || r < eps) {
-        return moves[(size_t)(g_rng() % moves.size())];
+    // if no heuristic, or with probability eps, choose a random move for more exploration
+    if (h == nullptr || (double)(g_rng() % 10000000) / 10000000.0 < eps) {
+        return moves[g_rng() % moves.size()];
     }
 
+    // Otherwise, choose the best move according to heuristic
     int best = -INF_SCORE;
     Move best_mv = moves[0];
     for (const Move& mv : moves) {
-        State ns = apply_move(s, player, mv);
+        Bitboard ns = apply_move(s, player, mv);
         int v = h->evaluate(ns, player);
         if (v > best) {
             best = v;
@@ -1134,7 +1179,7 @@ Move choose_playout_move(const State& s, int8 player, const Heuristic* h, double
     return best_mv;
 }
 
-int mcts_playout(State s, int8 player, const Heuristic* h, int root_player, double eps = 0.65) {
+int mcts_playout(Bitboard s, int8 player, const Heuristic* h, int root_player, double eps = 0.65) {
     for (int t = 0; t < 220; t++) {
         int w = winner_from_state(s);
         if (w != -1) return w;
@@ -1143,13 +1188,13 @@ int mcts_playout(State s, int8 player, const Heuristic* h, int root_player, doub
         generate_moves(s, player, moves);
         if (moves.empty()) {
             s = apply_pass(s);
-            player = (int8)(3 - player);
+            player = (3 - player);
             continue;
         }
 
         Move mv = choose_playout_move(s, player, h, eps);
         s = apply_move(s, player, mv);
-        player = (int8)(3 - player);
+        player = (3 - player);
     }
 
     int p1 = popcnt(s.p1), p2 = popcnt(s.p2);
@@ -1158,7 +1203,7 @@ int mcts_playout(State s, int8 player, const Heuristic* h, int root_player, doub
     return root_player;
 }
 
-Move mcts_solver(const State& root_state, int8 root_player, const Heuristic* h,
+Move mcts_solver(const Bitboard& root_state, int8 root_player, const Heuristic* h,
                  int max_iters, double time_limit_ms) {
     MCTSNode* root = new MCTSNode(root_state, root_player, Move(), nullptr);
     if (root->untried.empty()) {
@@ -1167,7 +1212,7 @@ Move mcts_solver(const State& root_state, int8 root_player, const Heuristic* h,
     }
 
     auto t0 = chrono::steady_clock::now();
-    const double C = 1.41421356237;
+    const double K = 1.41421356237;
 
     for (int iter = 0; iter < max_iters; iter++) {
         if ((iter & 127) == 0 && time_limit_ms > 0.0) {
@@ -1176,14 +1221,16 @@ Move mcts_solver(const State& root_state, int8 root_player, const Heuristic* h,
         }
 
         MCTSNode* node = root;
-
+        
+        // Selection
+        // UCT: u_i = w_i / n_i + K * sqrt(log(N) / n_i)
         while (node->untried.empty() && !node->children.empty() && !node->terminal()) {
             MCTSNode* best = nullptr;
-            double best_uct = -1e100;
-            double ln_vis = log((double)max(1, node->visits));
+            double best_uct = -1e10;
+            double log_vis = log((double)node->visits);
             for (MCTSNode* ch : node->children) {
-                double exploit = (ch->visits > 0 ? ch->win_sum / ch->visits : 0.0);
-                double explore = C * sqrt(ln_vis / (ch->visits + 1e-9));
+                double exploit = (double)ch->win_sum / (ch->visits + 1e-9);
+                double explore = K * sqrt(log_vis / (ch->visits + 1e-9));
                 double uct = exploit + explore;
                 if (uct > best_uct) {
                     best_uct = uct;
@@ -1193,23 +1240,26 @@ Move mcts_solver(const State& root_state, int8 root_player, const Heuristic* h,
             node = best;
         }
 
+        // Expansion
         if (!node->terminal() && !node->untried.empty()) {
-            int pick = (int)(g_rng() % node->untried.size());
+            int pick = (g_rng() % node->untried.size());
             Move mv = node->untried[pick];
             node->untried[pick] = node->untried.back();
             node->untried.pop_back();
 
-            State ns = apply_move(node->s, node->player, mv);
-            MCTSNode* child = new MCTSNode(ns, (int8)(3 - node->player), mv, node);
+            Bitboard ns = apply_move(node->s, node->player, mv);
+            MCTSNode* child = new MCTSNode(ns, (3 - node->player), mv, node);
             node->children.push_back(child);
             node = child;
         }
 
+        // Simulation
         int winner = mcts_playout(node->s, node->player, h, root_player);
         double result = 0.5;
         if (winner == root_player) result = 1.0;
         else if (winner == 3 - root_player) result = 0.0;
 
+        // Backpropagation
         while (node) {
             node->visits++;
             node->win_sum += result;
@@ -1227,22 +1277,8 @@ Move mcts_solver(const State& root_state, int8 root_player, const Heuristic* h,
     }
 
     Move ans = (best ? best->from_parent : root->untried[0]);
-    delete root;
+    delete root; // will recursively delete all nodes
     return ans;
-}
-
-State board_to_state(const int board[MAX_M][MAX_N], int step) {
-    State s;
-    for (int r = 0; r < 7; r++) {
-        for (int c = 0; c < 7; c++) {
-            U64 b = bit_at(r, c);
-            if (board[r][c] == 1) s.p1 |= b;
-            else if (board[r][c] == 2) s.p2 |= b;
-        }
-    }
-    s.ply = (int16_t)(step - 1);
-    s.pass_count = 0;
-    return s;
 }
 
 #ifndef LOCAL
@@ -1258,18 +1294,12 @@ void play_games(int step) {
     Board board;
     read_ckbd(step - 1, board);
     int8 player = (step & 1) ? 1 : 2;
-    State s = board_to_state(board, step);
+    Bitboard s = board_to_state(board, step);
 
     static ExpansionHeuristic h_base;
-    static MaterialBoostHeuristic h_best(&h_base, 40);
-    Move best = iterative_deepening_solver(s, player, &h_best, 10, 1850.0);
+    static MaterialPlusHeuristic h_best(&h_base, 40);
+    Move best = iterative_deepening_solver(s, player, &h_best, 10, 1500.0);
 
-    vector<Move> sanity;
-    generate_moves(s, player, sanity, true);
-    if (sanity.empty()) {
-        save_decision(0, 0, 0, 0);
-        return;
-    }
     save_decision(best.sr, best.sc, best.dr, best.dc);
 }
 
@@ -1287,7 +1317,7 @@ struct SolverProfile {
     int max_iters;
     double time_limit_ms;
 
-    Move get_move(const State& s, int8 player) const {
+    Move get_move(const Bitboard& s, int8 player) const {
         if (type == SOLVER_AB) return ab_solver(s, player, h, max_depth);
         if (type == SOLVER_ID) return iterative_deepening_solver(s, player, h, max_depth, time_limit_ms);
         return mcts_solver(s, player, h, max_iters, time_limit_ms);
@@ -1314,8 +1344,8 @@ static string make_unique_tag() {
     return to_string(ms);
 }
 
-State initial_state() {
-    State s;
+Bitboard initial_state() {
+    Bitboard s;
     s.p1 = bit_at(0, 0) | bit_at(6, 6);
     s.p2 = bit_at(0, 6) | bit_at(6, 0);
     s.ply = 0;
@@ -1324,7 +1354,7 @@ State initial_state() {
 }
 
 MatchResult play_match(const SolverProfile& p1, const SolverProfile& p2, int max_ply = MAX_STEPS) {
-    State s = initial_state();
+    Bitboard s = initial_state();
     double p1_time = 0.0, p2_time = 0.0;
     int p1_moves = 0, p2_moves = 0;
 
@@ -1386,7 +1416,7 @@ TournamentResult run_tournament(
     FILE* report_fp,
     const char* stage_name
 ) {
-    int n = (int)solvers.size();
+    int n = solvers.size();
     vector<int> wins(n, 0);
     vector<int> timeout_wins(n, 0);
     vector<int> games(n, 0);
@@ -1484,12 +1514,12 @@ int main() {
     CenterPressurePCHeuristic h_cppc;
     PressureExpansionHeuristic h_pexp;
 
-    MaterialBoostHeuristic h_exp40(&h_exp, 40);
-    MaterialBoostHeuristic h_pc40(&h_pconv, 40);
-    MaterialBoostHeuristic h_hyb40(&h_hyb, 40);
-    MaterialBoostHeuristic h_cexp40(&h_cexp, 40);
-    MaterialBoostHeuristic h_cppc40(&h_cppc, 40);
-    MaterialBoostHeuristic h_pexp40(&h_pexp, 40);
+    MaterialPlusHeuristic h_exp40(&h_exp, 40);
+    MaterialPlusHeuristic h_pc40(&h_pconv, 40);
+    MaterialPlusHeuristic h_hyb40(&h_hyb, 40);
+    MaterialPlusHeuristic h_cexp40(&h_cexp, 40);
+    MaterialPlusHeuristic h_cppc40(&h_cppc, 40);
+    MaterialPlusHeuristic h_pexp40(&h_pexp, 40);
 
     const int trials_main = 20;
     const int id_depth = 6;
@@ -1505,7 +1535,7 @@ int main() {
     TournamentResult r9 = run_tournament(stage9, trials_main, csv9, report_fp, "Stage 9 - Exp40 vs PC40 vs Hybrid40 vs Material");
 
     vector<int> idx9(stage9.size());
-    for (int i = 0; i < (int)stage9.size(); i++) idx9[i] = i;
+    for (int i = 0; i < stage9.size(); i++) idx9[i] = i;
     sort(idx9.begin(), idx9.end(), [&](int a, int b) {
         if (r9.wins[a] != r9.wins[b]) return r9.wins[a] > r9.wins[b];
         if (r9.timeout_wins[a] != r9.timeout_wins[b]) return r9.timeout_wins[a] < r9.timeout_wins[b];
@@ -1525,7 +1555,7 @@ int main() {
     TournamentResult r10 = run_tournament(stage10, trials_main, csv10, report_fp, "Stage 10 - Recombine Under Mat40");
 
     vector<int> idx10(stage10.size());
-    for (int i = 0; i < (int)stage10.size(); i++) idx10[i] = i;
+    for (int i = 0; i < stage10.size(); i++) idx10[i] = i;
     sort(idx10.begin(), idx10.end(), [&](int a, int b) {
         if (r10.wins[a] != r10.wins[b]) return r10.wins[a] > r10.wins[b];
         if (r10.timeout_wins[a] != r10.timeout_wins[b]) return r10.timeout_wins[a] < r10.timeout_wins[b];
@@ -1542,7 +1572,7 @@ int main() {
     TournamentResult r11 = run_tournament(stage11, 10, csv11, report_fp, "Stage 11 - AB Material vs ID Material");
 
     vector<int> idx11(stage11.size());
-    for (int i = 0; i < (int)stage11.size(); i++) idx11[i] = i;
+    for (int i = 0; i < stage11.size(); i++) idx11[i] = i;
     sort(idx11.begin(), idx11.end(), [&](int a, int b) {
         if (r11.wins[a] != r11.wins[b]) return r11.wins[a] > r11.wins[b];
         if (r11.timeout_wins[a] != r11.timeout_wins[b]) return r11.timeout_wins[a] < r11.timeout_wins[b];
@@ -1559,7 +1589,7 @@ int main() {
     TournamentResult r12 = run_tournament(stage12, 10, csv12, report_fp, "Stage 12 - ID Hybrid vs MCTS Variants");
 
     vector<int> idx12(stage12.size());
-    for (int i = 0; i < (int)stage12.size(); i++) idx12[i] = i;
+    for (int i = 0; i < stage12.size(); i++) idx12[i] = i;
     sort(idx12.begin(), idx12.end(), [&](int a, int b) {
         if (r12.wins[a] != r12.wins[b]) return r12.wins[a] > r12.wins[b];
         if (r12.timeout_wins[a] != r12.timeout_wins[b]) return r12.timeout_wins[a] < r12.timeout_wins[b];
