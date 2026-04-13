@@ -30,7 +30,7 @@ const int INF_SCORE = 200000000;
 const int MAX_STEPS = 200;
 const int MAX_DEPTH = 64;
 
-const int MATERIAL_WEIGHT = 50;
+const int MATERIAL_WEIGHT = 30;
 
 /* Move */
 
@@ -323,7 +323,7 @@ void generate_moves(const Bitboard& s, int8 player, vector<Move>& moves, bool an
 
             U64 cap_mask = g_adj_mask[didx] & (player == 1 ? s.p2 : s.p1);
             int cap = popcnt(cap_mask);
-            mv.pri = 300 + cap * 30 - center_dist2(dr, dc);
+            mv.pri = 200 + cap * 30 - center_dist2(dr, dc);
             moves.push_back(mv);
             if (any_one) return;
         }

@@ -466,7 +466,7 @@ Manhattan distance is used.
 
 ### 4.13. Hybrid
 
-After testing the performance of each individual heuristic (to be discussed in Section 5), a hybrid heuristic is created by combining Center control, infection pressure and expansion.
+After preliminary testing the performance of each individual heuristic (to be discussed in Section 5), a hybrid heuristic is created by combining Center control, infection pressure and expansion.
 
 $$
 f = 40 - 3 \cdot \text{dist}_{L2}^2((3, 3), (r, c)) + 10 \cdot \#\text{opponent adjacent} + 4 \cdot \#\text{clone moves}
