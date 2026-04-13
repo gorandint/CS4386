@@ -30,7 +30,7 @@ const int INF_SCORE = 200000000;
 const int MAX_STEPS = 200;
 const int MAX_DEPTH = 64;
 
-const int MATERIAL_WEIGHT = 30;
+const int MATERIAL_WEIGHT = 50;
 
 /* Move */
 
@@ -1576,95 +1576,63 @@ int main() {
     init_masks();
     init_zobrist();
 
-    string run_tag = "1776006875772";
+    string run_tag = make_unique_tag();
     string report_path = string("out/heuristic_iteration_report_") + run_tag + ".md";
     FILE* report_fp = fopen(report_path.c_str(), "w");
 
     fprintf(report_fp, "# Ataxx Heuristic Iteration Report\n\n");
     fprintf(report_fp, "Run tag: %s\n\n", run_tag.c_str());
-    fprintf(report_fp, "Stage 19-20: AB-depth and AB7-vs-ID verification after fix.\n");
+    fprintf(report_fp, "Stage 21: ID model comparison (1500ms, maxDepth field=10000).\n");
     fprintf(report_fp, "Ranking key: wins desc, timeout wins asc, avg move time asc.\n\n");
 
     ExpansionHeuristic h_exp;
     InfluenceHeuristic h_infl;
     PotentialConversionHeuristic h_pconv;
-    FrontierHeuristic h_front;
-    MaterialHeuristic h_mat;
 
     APlusBHeuristic h_infl_pconv(&h_infl, &h_pconv, 1, 1);
     APlusBHeuristic h_infl_exp(&h_infl, &h_exp, 1, 1);
-    APlusBHeuristic h_infl_pconv_exp(&h_infl_pconv, &h_exp, 1, 1);
     MaterialPlusHeuristic h_exp_m40(&h_exp, 40);
+    MaterialPlusHeuristic h_infl_exp_m0(&h_infl_exp, 0);
+    MaterialPlusHeuristic h_infl_exp_mn40(&h_infl_exp, -40);
+    MaterialPlusHeuristic h_infl_pconv_m0(&h_infl_pconv, 0);
     MaterialPlusHeuristic h_infl_pconv_mn40(&h_infl_pconv, -40);
 
     const int trials_main = 10;
-    const double id_time_ms = 1000.0;
+    const double id_time_ms = 1500.0;
 
-    vector<SolverProfile> stage19 = {
-        {"AB5-Expansion+Mat40", SOLVER_AB, &h_exp_m40, 5, 0, 0},
-        {"AB6-Expansion+Mat40", SOLVER_AB, &h_exp_m40, 6, 0, 0},
-        {"AB7-Expansion+Mat40", SOLVER_AB, &h_exp_m40, 7, 0, 0},
-        {"ID-Expansion+Mat40", SOLVER_ID, &h_exp_m40, 0, 0, id_time_ms}
+    vector<SolverProfile> stage21 = {
+        {"ID-Influence+Expansionx1+Mat0", SOLVER_ID, &h_infl_exp_m0, 10000, 0, id_time_ms},
+        {"ID-Influence+Expansionx1+Mat-40", SOLVER_ID, &h_infl_exp_mn40, 10000, 0, id_time_ms},
+        {"ID-Influence+PotentialConversionx1+Mat0", SOLVER_ID, &h_infl_pconv_m0, 10000, 0, id_time_ms},
+        {"ID-Influence+PotentialConversionx1+Mat-40", SOLVER_ID, &h_infl_pconv_mn40, 10000, 0, id_time_ms},
+        {"ID-Expansion+Mat40", SOLVER_ID, &h_exp_m40, 10000, 0, id_time_ms}
     };
-    string csv19 = string("out/stage19_expansion_ab_depth_vs_id_") + run_tag + ".csv";
-    TournamentResult r19 = run_tournament(stage19, trials_main, csv19, report_fp, "Stage 19 - Expansion AB5/6/7 vs ID");
+    string csv21 = string("out/stage21_id_combo_materialplus_") + run_tag + ".csv";
+    TournamentResult r21 = run_tournament(stage21, trials_main, csv21, report_fp, "Stage 21 - ID Influence/Expansion/PotentialConversion/MaterialPlus");
 
-    vector<int> idx19(stage19.size());
-    for (int i = 0; i < (int)stage19.size(); i++) idx19[i] = i;
-    sort(idx19.begin(), idx19.end(), [&](int a, int b) {
-        if (r19.wins[a] != r19.wins[b]) return r19.wins[a] > r19.wins[b];
-        if (r19.timeout_wins[a] != r19.timeout_wins[b]) return r19.timeout_wins[a] < r19.timeout_wins[b];
-        return r19.avg_move_time[a] < r19.avg_move_time[b];
-    });
-
-    vector<SolverProfile> stage20 = {
-        {"AB7-Expansion+Mat40", SOLVER_AB, &h_exp_m40, 7, 0, 0},
-        {"ID-Expansion+Mat40", SOLVER_ID, &h_exp_m40, 0, 0, id_time_ms},
-        {"AB7-Influence+PotentialConversionx1", SOLVER_AB, &h_infl_pconv, 7, 0, 0},
-        {"ID-Influence+PotentialConversionx1", SOLVER_ID, &h_infl_pconv, 0, 0, id_time_ms},
-        {"AB7-Influence+Expansionx1", SOLVER_AB, &h_infl_exp, 7, 0, 0},
-        {"ID-Influence+Expansionx1", SOLVER_ID, &h_infl_exp, 0, 0, id_time_ms},
-        {"AB7-Influence+PotentialConversionx1+Mat-40", SOLVER_AB, &h_infl_pconv_mn40, 7, 0, 0},
-        {"ID-Influence+PotentialConversionx1+Mat-40", SOLVER_ID, &h_infl_pconv_mn40, 0, 0, id_time_ms},
-        {"AB7-Influence+PotentialConversionx1+Expansionx1", SOLVER_AB, &h_infl_pconv_exp, 7, 0, 0},
-        {"ID-Influence+PotentialConversionx1+Expansionx1", SOLVER_ID, &h_infl_pconv_exp, 0, 0, id_time_ms},
-        {"AB7-Frontier", SOLVER_AB, &h_front, 7, 0, 0},
-        {"ID-Frontier", SOLVER_ID, &h_front, 0, 0, id_time_ms},
-        {"AB7-Material", SOLVER_AB, &h_mat, 7, 0, 0},
-        {"ID-Material", SOLVER_ID, &h_mat, 0, 0, id_time_ms}
-    };
-    string csv20 = string("out/stage20_strong_models_ab7_vs_id_") + run_tag + ".csv";
-    TournamentResult r20 = run_tournament(stage20, trials_main, csv20, report_fp, "Stage 20 - Strong Models AB7 vs ID");
-
-    vector<int> idx20(stage20.size());
-    for (int i = 0; i < (int)stage20.size(); i++) idx20[i] = i;
-    sort(idx20.begin(), idx20.end(), [&](int a, int b) {
-        if (r20.wins[a] != r20.wins[b]) return r20.wins[a] > r20.wins[b];
-        if (r20.timeout_wins[a] != r20.timeout_wins[b]) return r20.timeout_wins[a] < r20.timeout_wins[b];
-        return r20.avg_move_time[a] < r20.avg_move_time[b];
+    vector<int> idx21(stage21.size());
+    for (int i = 0; i < (int)stage21.size(); i++) idx21[i] = i;
+    sort(idx21.begin(), idx21.end(), [&](int a, int b) {
+        if (r21.wins[a] != r21.wins[b]) return r21.wins[a] > r21.wins[b];
+        if (r21.timeout_wins[a] != r21.timeout_wins[b]) return r21.timeout_wins[a] < r21.timeout_wins[b];
+        return r21.avg_move_time[a] < r21.avg_move_time[b];
     });
 
     fprintf(report_fp, "## Selection Summary\n\n");
-    if (!idx19.empty()) {
-        int best = idx19[0];
-        fprintf(report_fp, "Stage 19 best: **%s** (wins=%d, timeout wins=%d, avg move time=%.2f ms).\n",
-                stage19[best].name, r19.wins[best], r19.timeout_wins[best], r19.avg_move_time[best]);
+    if (!idx21.empty()) {
+        int best = idx21[0];
+        fprintf(report_fp, "Stage 21 best: **%s** (wins=%d, timeout wins=%d, avg move time=%.2f ms).\n\n",
+                stage21[best].name, r21.wins[best], r21.timeout_wins[best], r21.avg_move_time[best]);
     }
-    if (!idx20.empty()) {
-        int best = idx20[0];
-        fprintf(report_fp, "Stage 20 best: **%s** (wins=%d, timeout wins=%d, avg move time=%.2f ms).\n\n",
-                stage20[best].name, r20.wins[best], r20.timeout_wins[best], r20.avg_move_time[best]);
-    }
-    fprintf(report_fp, "Stage 19 compares AB5/6/7 and ID on Expansion+Mat40.\n");
-    fprintf(report_fp, "Stage 20 compares AB7 and ID versions of selected strong models from rounds 14-17.\n");
-    fprintf(report_fp, "Config: AB depth as listed, ID time-only (maxDepth ignored), time limit 1000ms, 10 trials per pair.\n\n");
+    fprintf(report_fp, "Stage 21 compares ID variants: Influence+Expansion with Mat(0/-40), Influence+PotentialConversion with Mat(0/-40), and Expansion+Mat40.\n");
+    fprintf(report_fp, "Config: ID only, time limit 1500ms, maxDepth field set to 10000 (kept consistent with submission style).\n");
+    fprintf(report_fp, "Note: ID in solver uses time-driven search; maxDepth profile field has no functional impact.\n\n");
 
     fclose(report_fp);
 
-    printf("Stage 19-20 run completed.\n");
+    printf("Stage 21 run completed.\n");
     printf("Report: %s\n", report_path.c_str());
-    printf("CSV 19: %s\n", csv19.c_str());
-    printf("CSV 20: %s\n", csv20.c_str());
+    printf("CSV 21: %s\n", csv21.c_str());
 
     return 0;
 }
