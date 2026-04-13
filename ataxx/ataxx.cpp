@@ -30,7 +30,7 @@ const int INF_SCORE = 200000000;
 const int MAX_STEPS = 200;
 const int MAX_DEPTH = 64;
 
-const int MATERIAL_WEIGHT = 50;
+const int MATERIAL_WEIGHT = 30;
 
 /* Move */
 
@@ -1311,13 +1311,11 @@ void play_games(int step) {
 
     // static ExpansionHeuristic h_base;
     // static MaterialPlusHeuristic h_best(&h_base, 40);
-    // static InfluenceHeuristic h1;
-    // static PotentialConversionHeuristic h2;
-    // static APlusBHeuristic h_best(&h1, &h2, 1, 1);
     static InfluenceHeuristic h1;
+    // static PotentialConversionHeuristic h2;
     static ExpansionHeuristic h2;
     static APlusBHeuristic h_best(&h1, &h2, 1, 1);
-    Move best = iterative_deepening_solver(s, player, &h_best, 0, 1500.0);
+    Move best = iterative_deepening_solver(s, player, &h_best, 10000, 1500.0);
 
     save_decision(best.sr, best.sc, best.dr, best.dc);
 }
