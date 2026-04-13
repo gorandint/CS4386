@@ -103,6 +103,7 @@ bool g_zob_ready = false;
 bool g_time_out = false;
 chrono::steady_clock::time_point g_start_time;
 double g_time_limit_ms = 0.0;
+int g_clone_base_pri = 60;
 
 mt19937_64 g_rng((uint64_t)chrono::steady_clock::now().time_since_epoch().count());
 
@@ -323,7 +324,7 @@ void generate_moves(const Bitboard& s, int8 player, vector<Move>& moves, bool an
 
             U64 cap_mask = g_adj_mask[didx] & (player == 1 ? s.p2 : s.p1);
             int cap = popcnt(cap_mask);
-            mv.pri = 200 + cap * 30 - center_dist2(dr, dc);
+            mv.pri = g_clone_base_pri + cap * 30 - center_dist2(dr, dc);
             moves.push_back(mv);
             if (any_one) return;
         }
@@ -1309,12 +1310,12 @@ void play_games(int step) {
     int8 player = (step & 1) ? 1 : 2;
     Bitboard s = board_to_state(board, step);
 
-    // static ExpansionHeuristic h_base;
-    // static MaterialPlusHeuristic h_best(&h_base, 40);
-    static InfluenceHeuristic h1;
+    static ExpansionHeuristic h_base;
+    static MaterialPlusHeuristic h_best(&h_base, 40);
+    // static InfluenceHeuristic h1;
     // static PotentialConversionHeuristic h2;
-    static ExpansionHeuristic h2;
-    static APlusBHeuristic h_best(&h1, &h2, 1, 1);
+    // static ExpansionHeuristic h2;
+    // static APlusBHeuristic h_best(&h1, &h2, 1, 1);
     Move best = iterative_deepening_solver(s, player, &h_best, 10000, 1500.0);
 
     save_decision(best.sr, best.sc, best.dr, best.dc);
@@ -1333,8 +1334,10 @@ struct SolverProfile {
     int max_depth;
     int max_iters;
     double time_limit_ms;
+    int clone_base_pri;
 
     Move get_move(const Bitboard& s, int8 player) const {
+        g_clone_base_pri = clone_base_pri;
         if (type == SOLVER_AB) return ab_solver(s, player, h, max_depth);
         if (type == SOLVER_ID) return iterative_deepening_solver(s, player, h, MAX_DEPTH, time_limit_ms);
         return mcts_solver(s, player, h, max_iters, time_limit_ms);
@@ -1582,57 +1585,51 @@ int main() {
 
     fprintf(report_fp, "# Ataxx Heuristic Iteration Report\n\n");
     fprintf(report_fp, "Run tag: %s\n\n", run_tag.c_str());
-    fprintf(report_fp, "Stage 21: ID model comparison (1500ms, maxDepth field=10000).\n");
+    fprintf(report_fp, "Stage 23: fixed clone base=60 heuristic comparison.\n");
     fprintf(report_fp, "Ranking key: wins desc, timeout wins asc, avg move time asc.\n\n");
 
     ExpansionHeuristic h_exp;
+    MaterialHeuristic h_material;
     InfluenceHeuristic h_infl;
     PotentialConversionHeuristic h_pconv;
-
-    APlusBHeuristic h_infl_pconv(&h_infl, &h_pconv, 1, 1);
     APlusBHeuristic h_infl_exp(&h_infl, &h_exp, 1, 1);
+    APlusBHeuristic h_infl_pconv(&h_infl, &h_pconv, 1, 1);
     MaterialPlusHeuristic h_exp_m40(&h_exp, 40);
-    MaterialPlusHeuristic h_infl_exp_m0(&h_infl_exp, 0);
-    MaterialPlusHeuristic h_infl_exp_mn40(&h_infl_exp, -40);
-    MaterialPlusHeuristic h_infl_pconv_m0(&h_infl_pconv, 0);
-    MaterialPlusHeuristic h_infl_pconv_mn40(&h_infl_pconv, -40);
 
     const int trials_main = 10;
-    const double id_time_ms = 1500.0;
+    const double id_time_ms = 1000.0;
 
-    vector<SolverProfile> stage21 = {
-        {"ID-Influence+Expansionx1+Mat0", SOLVER_ID, &h_infl_exp_m0, 10000, 0, id_time_ms},
-        {"ID-Influence+Expansionx1+Mat-40", SOLVER_ID, &h_infl_exp_mn40, 10000, 0, id_time_ms},
-        {"ID-Influence+PotentialConversionx1+Mat0", SOLVER_ID, &h_infl_pconv_m0, 10000, 0, id_time_ms},
-        {"ID-Influence+PotentialConversionx1+Mat-40", SOLVER_ID, &h_infl_pconv_mn40, 10000, 0, id_time_ms},
-        {"ID-Expansion+Mat40", SOLVER_ID, &h_exp_m40, 10000, 0, id_time_ms}
+    vector<SolverProfile> stage23 = {
+        {"ID-Expansion+Mat40", SOLVER_ID, &h_exp_m40, 10000, 0, id_time_ms, 60},
+        {"ID-Influence+Expansionx1", SOLVER_ID, &h_infl_exp, 10000, 0, id_time_ms, 60},
+        {"ID-Influence+PotentialConversionx1", SOLVER_ID, &h_infl_pconv, 10000, 0, id_time_ms, 60},
+        {"ID-Material", SOLVER_ID, &h_material, 10000, 0, id_time_ms, 60}
     };
-    string csv21 = string("out/stage21_id_combo_materialplus_") + run_tag + ".csv";
-    TournamentResult r21 = run_tournament(stage21, trials_main, csv21, report_fp, "Stage 21 - ID Influence/Expansion/PotentialConversion/MaterialPlus");
+    string csv23 = string("out/stage23_clone60_heuristic_compare_") + run_tag + ".csv";
+    TournamentResult r23 = run_tournament(stage23, trials_main, csv23, report_fp, "Stage 23 - CloneBase60 Heuristic Comparison");
 
-    vector<int> idx21(stage21.size());
-    for (int i = 0; i < (int)stage21.size(); i++) idx21[i] = i;
-    sort(idx21.begin(), idx21.end(), [&](int a, int b) {
-        if (r21.wins[a] != r21.wins[b]) return r21.wins[a] > r21.wins[b];
-        if (r21.timeout_wins[a] != r21.timeout_wins[b]) return r21.timeout_wins[a] < r21.timeout_wins[b];
-        return r21.avg_move_time[a] < r21.avg_move_time[b];
+    vector<int> idx23(stage23.size());
+    for (int i = 0; i < (int)stage23.size(); i++) idx23[i] = i;
+    sort(idx23.begin(), idx23.end(), [&](int a, int b) {
+        if (r23.wins[a] != r23.wins[b]) return r23.wins[a] > r23.wins[b];
+        if (r23.timeout_wins[a] != r23.timeout_wins[b]) return r23.timeout_wins[a] < r23.timeout_wins[b];
+        return r23.avg_move_time[a] < r23.avg_move_time[b];
     });
 
     fprintf(report_fp, "## Selection Summary\n\n");
-    if (!idx21.empty()) {
-        int best = idx21[0];
-        fprintf(report_fp, "Stage 21 best: **%s** (wins=%d, timeout wins=%d, avg move time=%.2f ms).\n\n",
-                stage21[best].name, r21.wins[best], r21.timeout_wins[best], r21.avg_move_time[best]);
+    if (!idx23.empty()) {
+        int best = idx23[0];
+        fprintf(report_fp, "Stage 23 best: **%s** (wins=%d, timeout wins=%d, avg move time=%.2f ms).\n\n",
+                stage23[best].name, r23.wins[best], r23.timeout_wins[best], r23.avg_move_time[best]);
     }
-    fprintf(report_fp, "Stage 21 compares ID variants: Influence+Expansion with Mat(0/-40), Influence+PotentialConversion with Mat(0/-40), and Expansion+Mat40.\n");
-    fprintf(report_fp, "Config: ID only, time limit 1500ms, maxDepth field set to 10000 (kept consistent with submission style).\n");
-    fprintf(report_fp, "Note: ID in solver uses time-driven search; maxDepth profile field has no functional impact.\n\n");
+    fprintf(report_fp, "Stage 23 compares four heuristics under fixed clone base priority=60.\n");
+    fprintf(report_fp, "Config: ID only, time limit 1000ms, heuristics = {Expansion+Mat40, Influence+Expansion, Influence+PotentialConversion, Material}, trials=10 per pair.\n\n");
 
     fclose(report_fp);
 
-    printf("Stage 21 run completed.\n");
+    printf("Stage 23 run completed.\n");
     printf("Report: %s\n", report_path.c_str());
-    printf("CSV 21: %s\n", csv21.c_str());
+    printf("CSV 23: %s\n", csv23.c_str());
 
     return 0;
 }
