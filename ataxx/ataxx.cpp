@@ -10,6 +10,8 @@
 #include <cstring>
 #include <string>
 #include <random>
+#include <set>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -29,8 +31,6 @@ const int WIN_SCORE = 100000000;
 const int INF_SCORE = 200000000;
 const int MAX_STEPS = 200;
 const int MAX_DEPTH = 64;
-
-const int MATERIAL_WEIGHT = 30;
 
 /* Move */
 
@@ -104,6 +104,8 @@ bool g_time_out = false;
 chrono::steady_clock::time_point g_start_time;
 double g_time_limit_ms = 0.0;
 int g_clone_base_pri = 60;
+int g_capture_weight = 30;
+const int g_jump_base_pri = 100;
 
 mt19937_64 g_rng((uint64_t)chrono::steady_clock::now().time_since_epoch().count());
 
@@ -324,7 +326,7 @@ void generate_moves(const Bitboard& s, int8 player, vector<Move>& moves, bool an
 
             U64 cap_mask = g_adj_mask[didx] & (player == 1 ? s.p2 : s.p1);
             int cap = popcnt(cap_mask);
-            mv.pri = g_clone_base_pri + cap * 30 - center_dist2(dr, dc);
+            mv.pri = g_clone_base_pri + cap * g_capture_weight - center_dist2(dr, dc);
             moves.push_back(mv);
             if (any_one) return;
         }
@@ -339,7 +341,7 @@ void generate_moves(const Bitboard& s, int8 player, vector<Move>& moves, bool an
 
             U64 cap_mask = g_adj_mask[didx] & (player == 1 ? s.p2 : s.p1);
             int cap = popcnt(cap_mask);
-            mv.pri = 100 + cap * 30 - center_dist2(dr, dc);
+            mv.pri = g_jump_base_pri + cap * g_capture_weight - center_dist2(dr, dc);
             moves.push_back(mv);
             if (any_one) return;
         }
@@ -395,9 +397,17 @@ evaluate() will be used externally, and it will handle player side and check win
 */
 
 class Heuristic {
+protected:
+    int w_mat_;
+
+    int mat_score(const Bitboard& s) const {
+        return (popcnt(s.p1) - popcnt(s.p2)) * w_mat_;
+    }
+
 public:
+    Heuristic(int w_mat = 0) : w_mat_(w_mat) {}
     virtual ~Heuristic() {}
-    virtual const char* name() const = 0;
+    virtual string get_name() const = 0;
     virtual int estimate(const Bitboard& s) const = 0; // positive means P1 better
 
     int evaluate(const Bitboard& s, int8 player) const {
@@ -410,28 +420,31 @@ public:
 
 class MaterialHeuristic : public Heuristic {
 public:
-    const char* name() const { return "Material"; }
+    MaterialHeuristic(int w_mat = 0) : Heuristic(w_mat) {}
+    string get_name() const { return "Material"; }
     int estimate(const Bitboard& s) const {
-        return (popcnt(s.p1) - popcnt(s.p2)) * MATERIAL_WEIGHT;
+        return mat_score(s);
     }
 };
 
 class MobilityHeuristic : public Heuristic {
 public:
-    const char* name() const { return "Mobility"; }
+    MobilityHeuristic(int w_mat = 0) : Heuristic(w_mat) {}
+    string get_name() const { return "Mobility"; }
     int estimate(const Bitboard& s) const {
         vector<Move> m1, m2;
         generate_moves(s, 1, m1);
         generate_moves(s, 2, m2);
-        return (popcnt(s.p1) - popcnt(s.p2)) * MATERIAL_WEIGHT + (m1.size() - m2.size()) * 6;
+        return mat_score(s) + (m1.size() - m2.size()) * 6;
     }
 };
 
 class CenterControlHeuristic : public Heuristic {
 public:
-    const char* name() const { return "CenterControl"; }
+    CenterControlHeuristic(int w_mat = 0) : Heuristic(w_mat) {}
+    string get_name() const { return "CenterControl"; }
     int estimate(const Bitboard& s) const {
-        int score = (popcnt(s.p1) - popcnt(s.p2)) * MATERIAL_WEIGHT;
+        int score = mat_score(s);
         U64 t = s.p1;
         while (t) {
             int idx = lsb_index(t);
@@ -454,9 +467,10 @@ public:
 
 class InfectionPressureHeuristic : public Heuristic {
 public:
-    const char* name() const { return "InfectionPressure"; }
+    InfectionPressureHeuristic(int w_mat = 0) : Heuristic(w_mat) {}
+    string get_name() const { return "InfectionPressure"; }
     int estimate(const Bitboard& s) const {
-        int score = (popcnt(s.p1) - popcnt(s.p2)) * MATERIAL_WEIGHT;
+        int score = mat_score(s);
 
         U64 t = s.p1;
         while (t) {
@@ -483,9 +497,10 @@ public:
 
 class ExpansionHeuristic : public Heuristic {
 public:
-    const char* name() const { return "Expansion"; }
+    ExpansionHeuristic(int w_mat = 0) : Heuristic(w_mat) {}
+    string get_name() const { return "Expansion"; }
     int estimate(const Bitboard& s) const {
-        int score = (popcnt(s.p1) - popcnt(s.p2)) * MATERIAL_WEIGHT;
+        int score = mat_score(s);
         U64 occ = s.p1 | s.p2;
         U64 empty = g_valid_mask & (~occ);
 
@@ -509,9 +524,10 @@ public:
 
 class SafetyHeuristic : public Heuristic {
 public:
-    const char* name() const { return "Safety"; }
+    SafetyHeuristic(int w_mat = 0) : Heuristic(w_mat) {}
+    string get_name() const { return "Safety"; }
     int estimate(const Bitboard& s) const {
-        int score = (popcnt(s.p1) - popcnt(s.p2)) * MATERIAL_WEIGHT;
+        int score = mat_score(s);
         U64 t = s.p1;
         while (t) {
             int idx = lsb_index(t);
@@ -534,9 +550,10 @@ public:
 
 class InfluenceHeuristic : public Heuristic {
 public:
-    const char* name() const { return "Influence"; }
+    InfluenceHeuristic(int w_mat = 0) : Heuristic(w_mat) {}
+    string get_name() const { return "Influence"; }
     int estimate(const Bitboard& s) const {
-        int score = (popcnt(s.p1) - popcnt(s.p2)) * 10;
+        int score = mat_score(s);
         U64 occ = s.p1 | s.p2;
         U64 empty = g_valid_mask & (~occ);
         U64 e = empty;
@@ -553,11 +570,12 @@ public:
 
 class FrontierHeuristic : public Heuristic {
 public:
-    const char* name() const { return "Frontier"; }
+    FrontierHeuristic(int w_mat = 0) : Heuristic(w_mat) {}
+    string get_name() const { return "Frontier"; }
     int estimate(const Bitboard& s) const {
         int p1n = popcnt(s.p1), p2n = popcnt(s.p2);
         int empties = 49 - p1n - p2n;
-        int score = (p1n - p2n) * MATERIAL_WEIGHT;
+        int score = (p1n - p2n) * w_mat_;
 
         U64 occ = s.p1 | s.p2;
         U64 empty = g_valid_mask & (~occ);
@@ -587,9 +605,10 @@ public:
 
 class HybridHeuristic : public Heuristic {
 public:
-    const char* name() const { return "Hybrid"; }
+    HybridHeuristic(int w_mat = 0) : Heuristic(w_mat) {}
+    string get_name() const { return "Hybrid"; }
     int estimate(const Bitboard& s) const {
-        int score = (popcnt(s.p1) - popcnt(s.p2)) * MATERIAL_WEIGHT;
+        int score = mat_score(s);
         U64 occ = s.p1 | s.p2;
         U64 empty = g_valid_mask & (~occ);
 
@@ -620,10 +639,11 @@ class PositionWeightHeuristic : public Heuristic {
 private:
     static const int pos_weight[7][7];
 public:
-    const char* name() const { return "PositionWeight"; }
+    PositionWeightHeuristic(int w_mat = 0) : Heuristic(w_mat) {}
+    string get_name() const { return "PositionWeight"; }
 
     int estimate(const Bitboard& s) const {
-        int score = (popcnt(s.p1) - popcnt(s.p2)) * MATERIAL_WEIGHT;
+        int score = mat_score(s);
         U64 p1 = s.p1;
         U64 p2 = s.p2;
         while (p1) {
@@ -656,10 +676,11 @@ const int PositionWeightHeuristic::pos_weight[7][7] = {
 
 class PotentialConversionHeuristic : public Heuristic {
 public:
-    const char* name() const { return "PotentialConversion"; }
+    PotentialConversionHeuristic(int w_mat = 0) : Heuristic(w_mat) {}
+    string get_name() const { return "PotentialConversion"; }
 
     int estimate(const Bitboard& s) const {
-        int score = (popcnt(s.p1) - popcnt(s.p2)) * MATERIAL_WEIGHT;
+        int score = mat_score(s);
         U64 p1 = s.p1;
         U64 p2 = s.p2;
         while (p1) {
@@ -701,11 +722,11 @@ void init_control_terms() {
 
 class ControlAreaHeuristic : public Heuristic {
 public:
-    ControlAreaHeuristic() { init_control_terms(); }
-    const char* name() const { return "ControlArea"; }
+    ControlAreaHeuristic(int w_mat = 0) : Heuristic(w_mat) { init_control_terms(); }
+    string get_name() const { return "ControlArea"; }
 
     int estimate(const Bitboard& s) const {
-        int score = (popcnt(s.p1) - popcnt(s.p2)) * MATERIAL_WEIGHT;
+        int score = mat_score(s);
         U64 p1 = s.p1;
         U64 p2 = s.p2;
         U64 occ = s.p1 | s.p2;
@@ -732,10 +753,11 @@ public:
 
 class AggressionHeuristic : public Heuristic {
 public:
-    const char* name() const { return "Aggression"; }
+    AggressionHeuristic(int w_mat = 0) : Heuristic(w_mat) {}
+    string get_name() const { return "Aggression"; }
 
     int estimate(const Bitboard& s) const {
-        int score = (popcnt(s.p1) - popcnt(s.p2)) * MATERIAL_WEIGHT;
+        int score = mat_score(s);
 
         U64 p1 = s.p1;
         while (p1) {
@@ -780,7 +802,8 @@ public:
 
 class AdaptiveHeuristic : public Heuristic {
 public:
-    const char* name() const { return "Adaptive"; }
+    AdaptiveHeuristic(int w_mat = 0) : Heuristic(w_mat) {}
+    string get_name() const { return "Adaptive"; }
 
     int estimate(const Bitboard& s) const {
         int p1n = popcnt(s.p1);
@@ -817,7 +840,7 @@ public:
             pressure -= popcnt(g_adj_mask[idx] & s.p1) * 8;
         }
 
-        int score = (p1n - p2n) * MATERIAL_WEIGHT;
+        int score = (p1n - p2n) * w_mat_;
         int w_center = (28 - 10 * phase);
         int w_exp = (34 - 24 * phase);
         int w_pressure = (12 + 20 * phase);
@@ -830,9 +853,10 @@ public:
 
 class CenterExpansionHeuristic : public Heuristic {
 public:
-    const char* name() const { return "CenterExpansion"; }
+    CenterExpansionHeuristic(int w_mat = 0) : Heuristic(w_mat) {}
+    string get_name() const { return "CenterExpansion"; }
     int estimate(const Bitboard& s) const {
-        int score = (popcnt(s.p1) - popcnt(s.p2)) * MATERIAL_WEIGHT;
+        int score = mat_score(s);
         U64 occ = s.p1 | s.p2;
         U64 empty = g_valid_mask & (~occ);
 
@@ -862,9 +886,10 @@ public:
 
 class CenterPressurePCHeuristic : public Heuristic {
 public:
-    const char* name() const { return "CenterPressurePC"; }
+    CenterPressurePCHeuristic(int w_mat = 0) : Heuristic(w_mat) {}
+    string get_name() const { return "CenterPressurePC"; }
     int estimate(const Bitboard& s) const {
-        int score = (popcnt(s.p1) - popcnt(s.p2)) * MATERIAL_WEIGHT;
+        int score = mat_score(s);
         U64 t = s.p1;
         while (t) {
             int idx = lsb_index(t);
@@ -891,9 +916,10 @@ public:
 
 class PressureExpansionHeuristic : public Heuristic {
 public:
-    const char* name() const { return "PressureExpansion"; }
+    PressureExpansionHeuristic(int w_mat = 0) : Heuristic(w_mat) {}
+    string get_name() const { return "PressureExpansion"; }
     int estimate(const Bitboard& s) const {
-        int score = (popcnt(s.p1) - popcnt(s.p2)) * MATERIAL_WEIGHT;
+        int score = mat_score(s);
         U64 occ = s.p1 | s.p2;
         U64 empty = g_valid_mask & (~occ);
 
@@ -927,11 +953,11 @@ private:
 
 public:
     MaterialPlusHeuristic(const Heuristic* base, int material_w)
-        : h_base(base), material_w_(material_w) {
-        name_ = string(h_base->name()) + "+Mat" + to_string(material_w_);
+        : Heuristic(0), h_base(base), material_w_(material_w) {
+        name_ = h_base->get_name() + "+Mat" + to_string(material_w_);
     }
 
-    const char* name() const { return name_.c_str(); }
+    string get_name() const { return name_; }
 
     int estimate(const Bitboard& s) const {
         int mat = popcnt(s.p1) - popcnt(s.p2);
@@ -943,20 +969,18 @@ class APlusBHeuristic : public Heuristic {
 private:
     const Heuristic* a_;
     const Heuristic* b_;
-    int w_a_;
-    int w_b_;
     string name_;
 
 public:
-    APlusBHeuristic(const Heuristic* a, const Heuristic* b, int w_a=1, int w_b=1)
-        : a_(a), b_(b), w_a_(w_a), w_b_(w_b) {
-        name_ = string(a_->name()) + "x" + to_string(w_a_) + " + " + string(b_->name()) + "x" + to_string(w_b_);
+    APlusBHeuristic(const Heuristic* a, const Heuristic* b, int w_mat=0)
+        : Heuristic(w_mat), a_(a), b_(b) {
+        name_ = a_->get_name() + "+" + b_->get_name() + "+Mat" + to_string(w_mat_);
     }
 
-    const char* name() const { return name_.c_str(); }
+    string get_name() const { return name_; }
 
     int estimate(const Bitboard& s) const {
-        return a_->estimate(s) * w_a_ + b_->estimate(s) * w_b_;
+        return a_->estimate(s) + b_->estimate(s) + mat_score(s);
     }
 };
 
@@ -1310,12 +1334,12 @@ void play_games(int step) {
     int8 player = (step & 1) ? 1 : 2;
     Bitboard s = board_to_state(board, step);
 
-    static ExpansionHeuristic h_base;
+    static ExpansionHeuristic h_base(0);
     static MaterialPlusHeuristic h_best(&h_base, 40);
     // static InfluenceHeuristic h1;
     // static PotentialConversionHeuristic h2;
     // static ExpansionHeuristic h2;
-    // static APlusBHeuristic h_best(&h1, &h2, 1, 1);
+    // static APlusBHeuristic h_best(&h1, &h2, 0);
     Move best = iterative_deepening_solver(s, player, &h_best, 10000, 1500.0);
 
     save_decision(best.sr, best.sc, best.dr, best.dc);
@@ -1328,16 +1352,18 @@ void play_games(int step) {
 enum SolverType { SOLVER_AB, SOLVER_ID, SOLVER_MCTS };
 
 struct SolverProfile {
-    const char* name;
+    string name;
     SolverType type;
     const Heuristic* h;
     int max_depth;
     int max_iters;
     double time_limit_ms;
     int clone_base_pri;
+    int capture_weight;
 
     Move get_move(const Bitboard& s, int8 player) const {
         g_clone_base_pri = clone_base_pri;
+        g_capture_weight = capture_weight;
         if (type == SOLVER_AB) return ab_solver(s, player, h, max_depth);
         if (type == SOLVER_ID) return iterative_deepening_solver(s, player, h, MAX_DEPTH, time_limit_ms);
         return mcts_solver(s, player, h, max_iters, time_limit_ms);
@@ -1442,9 +1468,9 @@ TournamentResult run_tournament(
     vector<double> total_time(n, 0.0);
     vector<vector<int>> done(n, vector<int>(n, 0));
 
-    auto solver_index = [&](const char* nm) {
+    auto solver_index = [&](const string& nm) {
         for (int i = 0; i < n; i++) {
-            if (strcmp(solvers[i].name, nm) == 0) return i;
+            if (solvers[i].name == nm) return i;
         }
         return -1;
     };
@@ -1465,8 +1491,8 @@ TournamentResult run_tournament(
                     continue;
                 }
 
-                int a = solver_index(p1_name);
-                int b = solver_index(p2_name);
+                int a = solver_index(string(p1_name));
+                int b = solver_index(string(p2_name));
                 if (a < 0 || b < 0 || a == b) continue;
 
                 int i = min(a, b);
@@ -1541,9 +1567,9 @@ TournamentResult run_tournament(
                 }
 
                 fprintf(fp, "%d,%s,%s,%d,%d,%.3f,%.3f\n",
-                        t + 1, A.name, B.name, winner, res.ply, res.p1_avg_ms, res.p2_avg_ms);
+                        t + 1, A.name.c_str(), B.name.c_str(), winner, res.ply, res.p1_avg_ms, res.p2_avg_ms);
             }
-            printf("[%s] %s vs %s finished (%d/%d trials)\n", stage_name, solvers[i].name, solvers[j].name, trials, trials);
+            printf("[%s] %s vs %s finished (%d/%d trials)\n", stage_name, solvers[i].name.c_str(), solvers[j].name.c_str(), trials, trials);
         }
     }
     fclose(fp);
@@ -1568,7 +1594,7 @@ TournamentResult run_tournament(
     fprintf(report_fp, "|---:|---|---:|---:|---:|\n");
     for (int k = 0; k < n; k++) {
         int i = rank[k];
-        fprintf(report_fp, "| %d | %s | %d | %d | %.2f |\n", k + 1, solvers[i].name, wins[i], timeout_wins[i], avg_time[i]);
+        fprintf(report_fp, "| %d | %s | %d | %d | %.2f |\n", k + 1, solvers[i].name.c_str(), wins[i], timeout_wins[i], avg_time[i]);
     }
     fprintf(report_fp, "\n");
 
@@ -1585,51 +1611,79 @@ int main() {
 
     fprintf(report_fp, "# Ataxx Heuristic Iteration Report\n\n");
     fprintf(report_fp, "Run tag: %s\n\n", run_tag.c_str());
-    fprintf(report_fp, "Stage 23: fixed clone base=60 heuristic comparison.\n");
+    fprintf(report_fp, "Stage 24: random search on MoveOrdering and Material weight.\n");
     fprintf(report_fp, "Ranking key: wins desc, timeout wins asc, avg move time asc.\n\n");
 
-    ExpansionHeuristic h_exp;
-    MaterialHeuristic h_material;
-    InfluenceHeuristic h_infl;
-    PotentialConversionHeuristic h_pconv;
-    APlusBHeuristic h_infl_exp(&h_infl, &h_exp, 1, 1);
-    APlusBHeuristic h_infl_pconv(&h_infl, &h_pconv, 1, 1);
-    MaterialPlusHeuristic h_exp_m40(&h_exp, 40);
-
-    const int trials_main = 10;
+    const int trials_main = 6;
     const double id_time_ms = 1000.0;
 
-    vector<SolverProfile> stage23 = {
-        {"ID-Expansion+Mat40", SOLVER_ID, &h_exp_m40, 10000, 0, id_time_ms, 60},
-        {"ID-Influence+Expansionx1", SOLVER_ID, &h_infl_exp, 10000, 0, id_time_ms, 60},
-        {"ID-Influence+PotentialConversionx1", SOLVER_ID, &h_infl_pconv, 10000, 0, id_time_ms, 60},
-        {"ID-Material", SOLVER_ID, &h_material, 10000, 0, id_time_ms, 60}
-    };
-    string csv23 = string("out/stage23_clone60_heuristic_compare_") + run_tag + ".csv";
-    TournamentResult r23 = run_tournament(stage23, trials_main, csv23, report_fp, "Stage 23 - CloneBase60 Heuristic Comparison");
+    InfluenceHeuristic h_infl0(0);
+    ExpansionHeuristic h_exp0(0);
+    APlusBHeuristic h_infl_exp_m60(&h_infl0, &h_exp0, 60);
 
-    vector<int> idx23(stage23.size());
-    for (int i = 0; i < (int)stage23.size(); i++) idx23[i] = i;
-    sort(idx23.begin(), idx23.end(), [&](int a, int b) {
-        if (r23.wins[a] != r23.wins[b]) return r23.wins[a] > r23.wins[b];
-        if (r23.timeout_wins[a] != r23.timeout_wins[b]) return r23.timeout_wins[a] < r23.timeout_wins[b];
-        return r23.avg_move_time[a] < r23.avg_move_time[b];
+    InfluenceHeuristic h_infl0_b(0);
+    ExpansionHeuristic h_exp0_b(0);
+    APlusBHeuristic h_infl_exp_m60_b(&h_infl0_b, &h_exp0_b, 60);
+
+    vector<ExpansionHeuristic*> random_exp_heuristics;
+    vector<SolverProfile> stage24;
+
+    set<tuple<int, int, int>> exp_params;
+    exp_params.insert(make_tuple(60, 30, 70)); // known strong baseline expansion
+
+    uniform_int_distribution<int> dist_cl(4, 32);   // 40..320 (step 10)
+    uniform_int_distribution<int> dist_ca(2, 10);   // 10..50 (step 5)
+    uniform_int_distribution<int> dist_m(2, 10);    // 20..100 (step 10)
+
+    while ((int)exp_params.size() < 20) {
+        int cl = dist_cl(g_rng) * 10;
+        int ca = dist_ca(g_rng) * 5;
+        int mw = dist_m(g_rng) * 10;
+        exp_params.insert(make_tuple(cl, ca, mw));
+    }
+
+    for (const auto& p : exp_params) {
+        int cl = get<0>(p);
+        int ca = get<1>(p);
+        int mw = get<2>(p);
+        ExpansionHeuristic* h = new ExpansionHeuristic(mw);
+        random_exp_heuristics.push_back(h);
+
+        char nm[128];
+        snprintf(nm, sizeof(nm), "Expansion_Cl%d_Ca%d_M%d", cl, ca, mw);
+        stage24.push_back({string(nm), SOLVER_ID, h, 10000, 0, id_time_ms, cl, ca});
+    }
+
+    stage24.push_back({"Influence+Expansion_Cl60_Ca30_M60", SOLVER_ID, &h_infl_exp_m60, 10000, 0, id_time_ms, 60, 30});
+    stage24.push_back({"Influence+Expanison_Cl300_Ca30_M60", SOLVER_ID, &h_infl_exp_m60_b, 10000, 0, id_time_ms, 300, 30});
+
+    string csv24 = string("out/stage24_random_search_") + run_tag + ".csv";
+    TournamentResult r24 = run_tournament(stage24, trials_main, csv24, report_fp, "Stage 24 - Random Search + Strong Baselines");
+
+    vector<int> idx24(stage24.size());
+    for (int i = 0; i < (int)stage24.size(); i++) idx24[i] = i;
+    sort(idx24.begin(), idx24.end(), [&](int a, int b) {
+        if (r24.wins[a] != r24.wins[b]) return r24.wins[a] > r24.wins[b];
+        if (r24.timeout_wins[a] != r24.timeout_wins[b]) return r24.timeout_wins[a] < r24.timeout_wins[b];
+        return r24.avg_move_time[a] < r24.avg_move_time[b];
     });
 
     fprintf(report_fp, "## Selection Summary\n\n");
-    if (!idx23.empty()) {
-        int best = idx23[0];
-        fprintf(report_fp, "Stage 23 best: **%s** (wins=%d, timeout wins=%d, avg move time=%.2f ms).\n\n",
-                stage23[best].name, r23.wins[best], r23.timeout_wins[best], r23.avg_move_time[best]);
+    if (!idx24.empty()) {
+        int best = idx24[0];
+        fprintf(report_fp, "Stage 24 best: **%s** (wins=%d, timeout wins=%d, avg move time=%.2f ms).\n\n",
+                stage24[best].name.c_str(), r24.wins[best], r24.timeout_wins[best], r24.avg_move_time[best]);
     }
-    fprintf(report_fp, "Stage 23 compares four heuristics under fixed clone base priority=60.\n");
-    fprintf(report_fp, "Config: ID only, time limit 1000ms, heuristics = {Expansion+Mat40, Influence+Expansion, Influence+PotentialConversion, Material}, trials=10 per pair.\n\n");
+    fprintf(report_fp, "Search space (random on Expansion): clone base in [40,320], capture weight in [10,50], material weight in [20,100].\n");
+    fprintf(report_fp, "Fixed setting: jump base = 100.\n");
+    fprintf(report_fp, "Comparison includes known strong models: Expansion_Cl60_Ca30_M70, Influence+Expansion_Cl60_Ca30_M60, Influence+Expanison_Cl300_Ca30_M60.\n");
+    fprintf(report_fp, "Config: ID only, time limit 1000ms, trials=6 per pair.\n\n");
 
     fclose(report_fp);
 
-    printf("Stage 23 run completed.\n");
+    printf("Stage 24 run completed.\n");
     printf("Report: %s\n", report_path.c_str());
-    printf("CSV 23: %s\n", csv23.c_str());
+    printf("CSV 24: %s\n", csv24.c_str());
 
     return 0;
 }
