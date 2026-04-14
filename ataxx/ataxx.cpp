@@ -1614,7 +1614,7 @@ int main() {
     fprintf(report_fp, "Stage 24: random search on MoveOrdering and Material weight.\n");
     fprintf(report_fp, "Ranking key: wins desc, timeout wins asc, avg move time asc.\n\n");
 
-    const int trials_main = 6;
+    const int trials_main = 4;
     const double id_time_ms = 1000.0;
 
     InfluenceHeuristic h_infl0(0);
@@ -1631,11 +1631,11 @@ int main() {
     set<tuple<int, int, int>> exp_params;
     exp_params.insert(make_tuple(60, 30, 70)); // known strong baseline expansion
 
-    uniform_int_distribution<int> dist_cl(4, 32);   // 40..320 (step 10)
+    uniform_int_distribution<int> dist_cl(3, 18);   // 30..180 (step 10)
     uniform_int_distribution<int> dist_ca(2, 10);   // 10..50 (step 5)
     uniform_int_distribution<int> dist_m(2, 10);    // 20..100 (step 10)
 
-    while ((int)exp_params.size() < 20) {
+    while ((int)exp_params.size() < 15) {
         int cl = dist_cl(g_rng) * 10;
         int ca = dist_ca(g_rng) * 5;
         int mw = dist_m(g_rng) * 10;
