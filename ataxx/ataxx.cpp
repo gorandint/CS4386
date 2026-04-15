@@ -1614,7 +1614,7 @@ int main() {
     fprintf(report_fp, "Stage 24: random search on MoveOrdering and Material weight.\n");
     fprintf(report_fp, "Ranking key: wins desc, timeout wins asc, avg move time asc.\n\n");
 
-    const int trials_main = 4;
+    const int trials_main = 6;
     const double id_time_ms = 1000.0;
 
     InfluenceHeuristic h_infl0(0);
@@ -1635,7 +1635,7 @@ int main() {
     uniform_int_distribution<int> dist_ca(2, 10);   // 10..50 (step 5)
     uniform_int_distribution<int> dist_m(2, 10);    // 20..100 (step 10)
 
-    while ((int)exp_params.size() < 15) {
+    while ((int)exp_params.size() < 17) {
         int cl = dist_cl(g_rng) * 10;
         int ca = dist_ca(g_rng) * 5;
         int mw = dist_m(g_rng) * 10;
