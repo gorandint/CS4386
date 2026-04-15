@@ -1642,16 +1642,16 @@ int main() {
         {"PositionWeight", SOLVER_ID, &h_pos80, 10000, 0, id_time_ms, fixed_clone_base, fixed_capture_weight}
     };
 
-    string csv25 = string("out/stage25_single_heuristics_") + run_tag + ".csv";
-    TournamentResult r25 = run_tournament(stage25, trials_main, csv25, report_fp, "Stage 25 - Single Heuristics (Clone120/Capture35)");
+    // string csv25 = string("out/stage25_single_heuristics_") + run_tag + ".csv";
+    // TournamentResult r25 = run_tournament(stage25, trials_main, csv25, report_fp, "Stage 25 - Single Heuristics (Clone120/Capture35)");
 
-    vector<int> idx25(stage25.size());
-    for (int i = 0; i < (int)stage25.size(); i++) idx25[i] = i;
-    sort(idx25.begin(), idx25.end(), [&](int a, int b) {
-        if (r25.wins[a] != r25.wins[b]) return r25.wins[a] > r25.wins[b];
-        if (r25.timeout_wins[a] != r25.timeout_wins[b]) return r25.timeout_wins[a] < r25.timeout_wins[b];
-        return r25.avg_move_time[a] < r25.avg_move_time[b];
-    });
+    // vector<int> idx25(stage25.size());
+    // for (int i = 0; i < (int)stage25.size(); i++) idx25[i] = i;
+    // sort(idx25.begin(), idx25.end(), [&](int a, int b) {
+    //     if (r25.wins[a] != r25.wins[b]) return r25.wins[a] > r25.wins[b];
+    //     if (r25.timeout_wins[a] != r25.timeout_wins[b]) return r25.timeout_wins[a] < r25.timeout_wins[b];
+    //     return r25.avg_move_time[a] < r25.avg_move_time[b];
+    // });
 
     InfluenceHeuristic h_infl0(0);
     ExpansionHeuristic h_exp0(0);
@@ -1675,6 +1675,8 @@ int main() {
     vector<SolverProfile> stage26;
     vector<APlusBHeuristic> combo_h;
     combo_h.reserve(6);
+
+    int idx25[] = {6, 0, 3, 5}; // PositionWeight, Influence, PotentialConversion, Mobility
 
     for (int k = 0; k < 4 && k < (int)idx25.size(); k++) {
         int i = idx25[k];
@@ -1717,7 +1719,7 @@ int main() {
                 stage26[best26].name.c_str(), r26.wins[best26], r26.timeout_wins[best26], r26.avg_move_time[best26]);
     }
     fprintf(report_fp, "Fixed setting: jump base=100, clone base=120, capture weight=35.\n");
-    fprintf(report_fp, "Stage 25 set: Influence/Expansion/Material/PotentialConversion/Frontier/Mobility/PositionWeight, all with w_mat=80.\n");
+    // fprintf(report_fp, "Stage 25 set: Influence/Expansion/Material/PotentialConversion/Frontier/Mobility/PositionWeight, all with w_mat=80.\n");
     fprintf(report_fp, "Stage 26 set: top-4 from Stage 25 (as references) + their 6 pairwise APlusB combinations.\n");
     fprintf(report_fp, "For Stage 26 combinations, base heuristics use w_mat=0 and APlusB adds Mat80.\n");
     fprintf(report_fp, "Config: ID only, time limit 1000ms, trials=10 per pair.\n\n");
@@ -1726,7 +1728,7 @@ int main() {
 
     printf("Stage 25/26 run completed.\n");
     printf("Report: %s\n", report_path.c_str());
-    printf("CSV 25: %s\n", csv25.c_str());
+    // printf("CSV 25: %s\n", csv25.c_str());
     printf("CSV 26: %s\n", csv26.c_str());
 
     return 0;
