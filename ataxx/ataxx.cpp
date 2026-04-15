@@ -1615,79 +1615,119 @@ int main() {
 
     fprintf(report_fp, "# Ataxx Heuristic Iteration Report\n\n");
     fprintf(report_fp, "Run tag: %s\n\n", run_tag.c_str());
-    fprintf(report_fp, "Stage 24: random search on MoveOrdering and Material weight.\n");
+    fprintf(report_fp, "Stage 25/26: fixed MoveOrdering with additional heuristic tournaments.\n");
     fprintf(report_fp, "Ranking key: wins desc, timeout wins asc, avg move time asc.\n\n");
 
-    const int trials_main = 6;
+    const int trials_main = 10;
     const double id_time_ms = 1000.0;
+
+    const int fixed_clone_base = 120;
+    const int fixed_capture_weight = 35;
+
+    InfluenceHeuristic h_infl80(80);
+    ExpansionHeuristic h_exp80(80);
+    MaterialHeuristic h_mat80(80);
+    PotentialConversionHeuristic h_pconv80(80);
+    FrontierHeuristic h_front80(80);
+    MobilityHeuristic h_mobi80(80);
+    PositionWeightHeuristic h_pos80(80);
+
+    vector<SolverProfile> stage25 = {
+        {"Influence", SOLVER_ID, &h_infl80, 10000, 0, id_time_ms, fixed_clone_base, fixed_capture_weight},
+        {"Expansion", SOLVER_ID, &h_exp80, 10000, 0, id_time_ms, fixed_clone_base, fixed_capture_weight},
+        {"Material", SOLVER_ID, &h_mat80, 10000, 0, id_time_ms, fixed_clone_base, fixed_capture_weight},
+        {"PotentialConversion", SOLVER_ID, &h_pconv80, 10000, 0, id_time_ms, fixed_clone_base, fixed_capture_weight},
+        {"Frontier", SOLVER_ID, &h_front80, 10000, 0, id_time_ms, fixed_clone_base, fixed_capture_weight},
+        {"Mobility", SOLVER_ID, &h_mobi80, 10000, 0, id_time_ms, fixed_clone_base, fixed_capture_weight},
+        {"PositionWeight", SOLVER_ID, &h_pos80, 10000, 0, id_time_ms, fixed_clone_base, fixed_capture_weight}
+    };
+
+    string csv25 = string("out/stage25_single_heuristics_") + run_tag + ".csv";
+    TournamentResult r25 = run_tournament(stage25, trials_main, csv25, report_fp, "Stage 25 - Single Heuristics (Clone120/Capture35)");
+
+    vector<int> idx25(stage25.size());
+    for (int i = 0; i < (int)stage25.size(); i++) idx25[i] = i;
+    sort(idx25.begin(), idx25.end(), [&](int a, int b) {
+        if (r25.wins[a] != r25.wins[b]) return r25.wins[a] > r25.wins[b];
+        if (r25.timeout_wins[a] != r25.timeout_wins[b]) return r25.timeout_wins[a] < r25.timeout_wins[b];
+        return r25.avg_move_time[a] < r25.avg_move_time[b];
+    });
 
     InfluenceHeuristic h_infl0(0);
     ExpansionHeuristic h_exp0(0);
-    APlusBHeuristic h_infl_exp_m60(&h_infl0, &h_exp0, 60);
+    MaterialHeuristic h_mat0(0);
+    PotentialConversionHeuristic h_pconv0(0);
+    FrontierHeuristic h_front0(0);
+    MobilityHeuristic h_mobi0(0);
+    PositionWeightHeuristic h_pos0(0);
 
-    InfluenceHeuristic h_infl0_b(0);
-    ExpansionHeuristic h_exp0_b(0);
-    APlusBHeuristic h_infl_exp_m60_b(&h_infl0_b, &h_exp0_b, 60);
+    auto get_base0 = [&](const string& nm) -> const Heuristic* {
+        if (nm == "Influence") return &h_infl0;
+        if (nm == "Expansion") return &h_exp0;
+        if (nm == "Material") return &h_mat0;
+        if (nm == "PotentialConversion") return &h_pconv0;
+        if (nm == "Frontier") return &h_front0;
+        if (nm == "Mobility") return &h_mobi0;
+        if (nm == "PositionWeight") return &h_pos0;
+        return &h_exp0;
+    };
 
-    vector<ExpansionHeuristic*> random_exp_heuristics;
-    vector<SolverProfile> stage24;
+    vector<SolverProfile> stage26;
+    vector<APlusBHeuristic> combo_h;
+    combo_h.reserve(6);
 
-    set<tuple<int, int, int>> exp_params;
-    exp_params.insert(make_tuple(60, 30, 70)); // known strong baseline expansion
-
-    uniform_int_distribution<int> dist_cl(3, 18);   // 30..180 (step 10)
-    uniform_int_distribution<int> dist_ca(2, 10);   // 10..50 (step 5)
-    uniform_int_distribution<int> dist_m(2, 10);    // 20..100 (step 10)
-
-    while ((int)exp_params.size() < 17) {
-        int cl = dist_cl(g_rng) * 10;
-        int ca = dist_ca(g_rng) * 5;
-        int mw = dist_m(g_rng) * 10;
-        exp_params.insert(make_tuple(cl, ca, mw));
+    for (int k = 0; k < 4 && k < (int)idx25.size(); k++) {
+        int i = idx25[k];
+        stage26.push_back(stage25[i]);
     }
 
-    for (const auto& p : exp_params) {
-        int cl = get<0>(p);
-        int ca = get<1>(p);
-        int mw = get<2>(p);
-        ExpansionHeuristic* h = new ExpansionHeuristic(mw);
-        random_exp_heuristics.push_back(h);
+    for (int a = 0; a < 4 && a < (int)idx25.size(); a++) {
+        for (int b = a + 1; b < 4 && b < (int)idx25.size(); b++) {
+            const string& na = stage25[idx25[a]].name;
+            const string& nb = stage25[idx25[b]].name;
+            const Heuristic* ha0 = get_base0(na);
+            const Heuristic* hb0 = get_base0(nb);
 
-        char nm[128];
-        snprintf(nm, sizeof(nm), "Expansion_Cl%d_Ca%d_M%d", cl, ca, mw);
-        stage24.push_back({string(nm), SOLVER_ID, h, 10000, 0, id_time_ms, cl, ca});
+            combo_h.emplace_back(ha0, hb0, 80);
+            string combo_name = string("Combo(") + na + "+" + nb + ")";
+            stage26.push_back({combo_name, SOLVER_ID, &combo_h.back(), 10000, 0, id_time_ms, fixed_clone_base, fixed_capture_weight});
+        }
     }
 
-    stage24.push_back({"Influence+Expansion_Cl60_Ca30_M60", SOLVER_ID, &h_infl_exp_m60, 10000, 0, id_time_ms, 60, 30});
-    stage24.push_back({"Influence+Expanison_Cl300_Ca30_M60", SOLVER_ID, &h_infl_exp_m60_b, 10000, 0, id_time_ms, 300, 30});
+    string csv26 = string("out/stage26_top4_pair_combos_") + run_tag + ".csv";
+    TournamentResult r26 = run_tournament(stage26, trials_main, csv26, report_fp, "Stage 26 - Top4 Pair Combos + References");
 
-    string csv24 = string("out/stage24_random_search_") + run_tag + ".csv";
-    TournamentResult r24 = run_tournament(stage24, trials_main, csv24, report_fp, "Stage 24 - Random Search + Strong Baselines");
-
-    vector<int> idx24(stage24.size());
-    for (int i = 0; i < (int)stage24.size(); i++) idx24[i] = i;
-    sort(idx24.begin(), idx24.end(), [&](int a, int b) {
-        if (r24.wins[a] != r24.wins[b]) return r24.wins[a] > r24.wins[b];
-        if (r24.timeout_wins[a] != r24.timeout_wins[b]) return r24.timeout_wins[a] < r24.timeout_wins[b];
-        return r24.avg_move_time[a] < r24.avg_move_time[b];
+    vector<int> idx26(stage26.size());
+    for (int i = 0; i < (int)stage26.size(); i++) idx26[i] = i;
+    sort(idx26.begin(), idx26.end(), [&](int a, int b) {
+        if (r26.wins[a] != r26.wins[b]) return r26.wins[a] > r26.wins[b];
+        if (r26.timeout_wins[a] != r26.timeout_wins[b]) return r26.timeout_wins[a] < r26.timeout_wins[b];
+        return r26.avg_move_time[a] < r26.avg_move_time[b];
     });
 
     fprintf(report_fp, "## Selection Summary\n\n");
-    if (!idx24.empty()) {
-        int best = idx24[0];
-        fprintf(report_fp, "Stage 24 best: **%s** (wins=%d, timeout wins=%d, avg move time=%.2f ms).\n\n",
-                stage24[best].name.c_str(), r24.wins[best], r24.timeout_wins[best], r24.avg_move_time[best]);
+    if (!idx25.empty()) {
+        int best25 = idx25[0];
+        fprintf(report_fp, "Stage 25 best: **%s** (wins=%d, timeout wins=%d, avg move time=%.2f ms).\n",
+                stage25[best25].name.c_str(), r25.wins[best25], r25.timeout_wins[best25], r25.avg_move_time[best25]);
     }
-    fprintf(report_fp, "Search space (random on Expansion): clone base in [40,320], capture weight in [10,50], material weight in [20,100].\n");
-    fprintf(report_fp, "Fixed setting: jump base = 100.\n");
-    fprintf(report_fp, "Comparison includes known strong models: Expansion_Cl60_Ca30_M70, Influence+Expansion_Cl60_Ca30_M60, Influence+Expanison_Cl300_Ca30_M60.\n");
-    fprintf(report_fp, "Config: ID only, time limit 1000ms, trials=6 per pair.\n\n");
+    if (!idx26.empty()) {
+        int best26 = idx26[0];
+        fprintf(report_fp, "Stage 26 best: **%s** (wins=%d, timeout wins=%d, avg move time=%.2f ms).\n\n",
+                stage26[best26].name.c_str(), r26.wins[best26], r26.timeout_wins[best26], r26.avg_move_time[best26]);
+    }
+    fprintf(report_fp, "Fixed setting: jump base=100, clone base=120, capture weight=35.\n");
+    fprintf(report_fp, "Stage 25 set: Influence/Expansion/Material/PotentialConversion/Frontier/Mobility/PositionWeight, all with w_mat=80.\n");
+    fprintf(report_fp, "Stage 26 set: top-4 from Stage 25 (as references) + their 6 pairwise APlusB combinations.\n");
+    fprintf(report_fp, "For Stage 26 combinations, base heuristics use w_mat=0 and APlusB adds Mat80.\n");
+    fprintf(report_fp, "Config: ID only, time limit 1000ms, trials=10 per pair.\n\n");
 
     fclose(report_fp);
 
-    printf("Stage 24 run completed.\n");
+    printf("Stage 25/26 run completed.\n");
     printf("Report: %s\n", report_path.c_str());
-    printf("CSV 24: %s\n", csv24.c_str());
+    printf("CSV 25: %s\n", csv25.c_str());
+    printf("CSV 26: %s\n", csv26.c_str());
 
     return 0;
 }
