@@ -247,9 +247,13 @@ inline void tt_store(U64 key, int8 depth, int8 flag, int score, const Move& best
 
 As previously mentioned, the efficiency of alpha-beta pruning can be significantly improved by ordering the moves such that the best moves are evaluated first.
 
-Killer moves are moves that have caused a beta cut-off in the past at the same depth. The idea is that if a move has previously caused a cut-off, it is likely to be a good move in similar positions, and should be tried early in the move ordering. 
+Killer moves [1] are moves that have caused a beta cut-off in the past at the same depth. The idea is that if a move has previously caused a cut-off, it is likely to be a good move in similar positions, and should be tried early in the move ordering. 
 
 At each depth, the two most recent killer moves are stored in a `killer` array. When a beta cut-off occurs, the move that caused the cut-off is stored as the first killer move for that depth, and the previous first killer move (if any) is moved to the second slot.
+
+The following image illustrates the concept of killer moves:
+
+![](../ataxx/images/4.png)
 
 The following move ordering is used when generating moves for a given game state:
 
@@ -261,16 +265,20 @@ The following move ordering is used when generating moves for a given game state
 For other moves, the following heuristic is used to assign a priority score:
 
 $$
-V(mv) = \text{base} + \text{cap} \cdot 30 - \text{dist}((3, 3), (dr, dc))
+V(mv) = w_b + \text{cap} \cdot w_c - \text{dist}((3, 3), (dr, dc))
 $$
 
 Where:
 
-- `base` is 300 for clone moves and 100 for jump moves, as clone moves are generally more advantageous.
-- `cap` is the number of opponent pieces that would be captured by this move.
+- `w_b` is 120 for clone moves and 100 for jump moves, as clone moves are generally more advantageous.
+- `w_c` is the weight for captures, `cap` is the number of opponent pieces that would be captured by this move.
 - `dist((3, 3), (dr, dc))` is the Euclidean distance from the destination cell to the center of the board, which encourages moves towards the center.
 
 ```cpp
+int g_clone_base_pri = 120;
+int g_capture_weight = 35;
+const int g_jump_base_pri = 100;
+
 void generate_moves(const Bitboard& s, int8 player, vector<Move>& moves, bool any_one = false) {
     // Generate all valid moves for the given player. If any_one is true, return the first valid move found.
     moves.clear();
@@ -294,7 +302,7 @@ void generate_moves(const Bitboard& s, int8 player, vector<Move>& moves, bool an
 
             U64 cap_mask = g_adj_mask[didx] & (player == 1 ? s.p2 : s.p1);
             int cap = popcnt(cap_mask);
-            mv.pri = 300 + cap * 30 - center_dist2(dr, dc);
+            mv.pri = g_clone_base_pri + cap * g_capture_weight - center_dist2(dr, dc);
             moves.push_back(mv);
             if (any_one) return;
         }
@@ -309,7 +317,7 @@ void generate_moves(const Bitboard& s, int8 player, vector<Move>& moves, bool an
 
             U64 cap_mask = g_adj_mask[didx] & (player == 1 ? s.p2 : s.p1);
             int cap = popcnt(cap_mask);
-            mv.pri = 100 + cap * 30 - center_dist2(dr, dc);
+            mv.pri = g_jump_base_pri + cap * g_capture_weight - center_dist2(dr, dc);
             moves.push_back(mv);
             if (any_one) return;
         }
@@ -474,10 +482,243 @@ $$
 
 ![](../ataxx/images/heuristic/hybrid.png)
 
+### 4.14. Combination of Heuristics
+
+In addition to 13 base heuristics, two combinations of heuristics can be used:
+
+- `MaterialBoostHeuristic(h, w_mat)`: a wrapper that adds `w_mat` times the Material heuristic to any given heuristic `h`. This is based on the observation that material advantage is the most fundamental aspect of the game, and can provide a solid foundation for other heuristics to build upon.
+- `APlusBHeuristic(h1, h2, w1, w2)`: a wrapper that combines two heuristics `h1` and `h2` with weights `w1` and `w2`, respectively. This allows for more flexible combinations of heuristics to be tested.
+
 ## 5. Evaluation
 
 ### 5.1. Tournament Setup
 
-To evaluate the performance of different heuristics and search algorithms, a tournament is conducted where each pair of heuristics is tested against each other. By default, each pair of heuristics is tested with 10 trial (swapping sides for every other trial), and the time limit for each move is set to 1000 ms. The results are ranked primarily by the number of wins, then by the number of timeout wins (winning after 200 moves, lower is better), and finally by the average move time (lower is better).
+To evaluate the performance of different heuristics and search algorithms, a tournament is conducted where each pair of heuristics is tested against each other. By default, each pair of heuristics is tested with 10 trial (half with A being P1 and half with A being P2), and the time limit for each move is set to 1000 ms. The results are ranked primarily by the number of wins, then by the number of timeout wins (winning after 200 moves, lower is better), and finally by the average move time (lower is better).
 
 ### 5.2. Evaluation of Search Algorithms
+
+Table 1 shows the results of comparing Alpha-beta Negamax against Iterative Deepening using the same Heuristic.
+
+| Rank | Heuristic | Wins | Timeout Wins | Avg Move Time |
+|---:|---|---:|---:|---:|
+| 1 | ID-Expansion+Mat40 | 28 | 5 | 805.85 |
+| 2 | AB7-Expansion+Mat40 | 20 | 0 | 107.25 |
+| 3 | AB6-Expansion+Mat40 | 7 | 2 | 22.54 |
+| 4 | AB5-Expansion+Mat40 | 5 | 5 | 5.64 |
+
+Conclusion: Iterative Deepening significantly outperforms fixed-depth Alpha-beta Negamax, as it can reach deeper levels in the search tree within the same time limit, and thus find better moves. The results also show that with the increase of search depth, the performance of Alpha-beta Negamax improves.
+
+Table 2 shows the results of comparing MCTS against Iterative Deepening using the same Heuristic.
+
+| Rank | Heuristic | Wins | Timeout Wins | Avg Move Time |
+|---:|---|---:|---:|---:|
+| 1 | ID-Hybrid | 30 | 0 | 42.06 |
+| 2 | MCTS-Material | 15 | 0 | 945.05 |
+| 3 | MCTS-Hybrid | 11 | 0 | 950.19 |
+| 4 | MCTS | 4 | 0 | 979.98 |
+
+Conclusion: for Ataxx, a deterministic perfect information game, the knowledge-based search algorithm (Iterative Deepening) significantly outperforms the knowledge-free search algorithm (MCTS). The results also show that MCTS with a reasonable heuristic (Material or Hybrid) performs much better than vanilla MCTS, though it still cannot competes with Iterative Deepening.
+
+### 5.3. Evaluation of Heuristics
+
+#### 5.3.1. Baseline Comparison
+
+Table 3 shows the results of comparing different heuristics using Iterative Deepening. All heuristics expect Material are by default combined with 50 times the Material heuristic, as material advantage is the most fundamental aspect of the game and can provide a solid foundation for other heuristics to build upon.
+
+It should be noted that while ID has a time limit of 1000 ms, the average move time can be much lower than 1000 ms, as the search may prune a lot of branches and find good moves early on, especially with the help of move ordering heuristics.
+
+| Rank | Heuristic | Wins | Timeout Wins | Avg Move Time |
+|---:|---|---:|---:|---:|
+| 1 | Influence | 105 | 25 | 19.93 |
+| 2 | Expansion | 90 | 50 | 16.11 |
+| 3 | Material | 75 | 25 | 12.75 |
+| 4 | PotentialConversion | 70 | 20 | 14.90 |
+| 5 | Frontier | 70 | 20 | 16.14 |
+| 6 | Mobility | 70 | 20 | 60.23 |
+| 7 | PositionWeight | 70 | 35 | 13.82 |
+| 8 | Hybrid | 65 | 20 | 25.36 |
+| 9 | Aggression | 65 | 25 | 45.48 |
+| 10 | Adaptive | 60 | 30 | 24.10 |
+| 11 | ControlArea | 50 | 35 | 18.35 |
+| 12 | CenterControl | 45 | 5 | 20.07 |
+| 13 | InfectionPressure | 45 | 20 | 18.87 |
+| 14 | Safety | 30 | 5 | 16.69 |
+
+Conclusion: 
+
+- Material is a solid heuristic as expected.
+- Heuristics that consider the mobility and influence of pieces (Influence, Expansion, Potential Conversion) perform better than heuristics that only consider static features of the pieces (Position Weight, Center Control).
+
+#### 5.3.2. Combination of Heuristics
+
+For further improvement, different combinations of some of the better-performing heuristics (Influence, Expansion, Potential Conversion, Frontier) are tested against each other.
+
+Table 4 shows the results of comparing different combinations of heuristics using Iterative Deepening. This experiment also compares the performance of these combinations with their individual components.
+
+| Rank | Heuristic | Wins | Timeout Wins | Avg Move Time |
+|---:|---|---:|---:|---:|
+| 1 | Influence+PotentialConversionx1 | 70 | 25 | 22.14 |
+| 2 | Influence | 60 | 20 | 17.79 |
+| 3 | Influence+Expansionx1 | 60 | 25 | 17.82 |
+| 4 | Expansion+PotentialConversionx1 | 50 | 10 | 18.69 |
+| 5 | Influence+Frontierx1 | 50 | 10 | 20.20 |
+| 6 | Frontier | 50 | 30 | 10.64 |
+| 7 | PotentialConversion+Frontierx1 | 50 | 30 | 12.62 |
+| 8 | Expansion+Frontierx1 | 40 | 10 | 19.05 |
+| 9 | Expansion | 40 | 20 | 9.30 |
+| 10 | Material | 40 | 30 | 8.29 |
+| 11 | PotentialConversion | 40 | 30 | 9.93 |
+
+Conclusion:
+
+- Combining heuristics generally improves performance compared to using individual heuristics, as it allows the agent to consider multiple aspects of the game state simultaneously.
+- The best-performing combination is Influence and Potential Conversion, which suggests that considering both the global influence of pieces and the immediate capture opportunities provides a strong evaluation of the game state.
+
+### 5.3.3. Material Weight Tuning
+
+Another important aspect of the heuristic design is the weight assigned to the Material heuristic. A weight too high may cause Material to dominate the evaluation, while a weight too low may cause the agent to overlook the fundamental importance of material advantage.
+
+Table 5 shows the results of comparing different weights for the Material heuristic when combined with Expansion and Influence, which are two of the better-performing heuristics from previous experiments. The base Material weight is set to 50, so "+Mat40" means a total of 50+40=90 times the Material heuristic is added.
+
+| Rank | Heuristic | Wins | Timeout Wins | Avg Move Time |
+|---:|---|---:|---:|---:|
+| 1 | Expansion+Mat40 | 55 | 15 | 18.13 |
+| 2 | Influence+Mat80 | 45 | 15 | 18.80 |
+| 3 | Expansion+Mat80 | 45 | 25 | 18.86 |
+| 4 | Expansion+Mat0 | 40 | 15 | 14.49 |
+| 5 | Influence+Mat40 | 35 | 15 | 17.52 |
+| 6 | Influence+Mat0 | 30 | 15 | 17.76 |
+| 7 | Expansion+Mat-40 | 15 | 10 | 9.97 |
+| 8 | Influence+Mat-40 | 15 | 10 | 12.46 |
+
+Conclusion: The Material weight has significant impact on the performance of the heuristic. Influence is stronger than Expansion in previous experiments, but with a suitable weight, Expansion (+Mat40) can outperform Influence (of any weight).
+
+Table 6 shows the results of testing different search algorithms, heuristic combinations and Material weights together.
+
+| Rank | Heuristic | Wins | Timeout Wins | Avg Move Time |
+|---:|---|---:|---:|---:|
+| 1 | ID-Influence+Expansionx1 | 101 | 9 | 806.52 |
+| 2 | ID-Influence+PotentialConversionx1+Expansionx1 | 91 | 0 | 794.36 |
+| 3 | ID-Influence+PotentialConversionx1 | 91 | 11 | 751.91 |
+| 4 | ID-Expansion+Mat40 | 90 | 15 | 837.05 |
+| 5 | ID-Frontier | 85 | 13 | 827.66 |
+| 6 | ID-Material | 82 | 3 | 837.49 |
+| 7 | ID-Influence+PotentialConversionx1+Mat-40 | 75 | 5 | 817.18 |
+| 8 | AB7-Expansion+Mat40 | 50 | 5 | 84.39 |
+| 9 | AB7-Influence+PotentialConversionx1 | 50 | 5 | 97.98 |
+| 10 | AB7-Material | 50 | 15 | 37.34 |
+| 11 | AB7-Influence+PotentialConversionx1+Expansionx1 | 45 | 5 | 134.70 |
+| 12 | AB7-Frontier | 40 | 2 | 47.40 |
+| 13 | AB7-Influence+Expansionx1 | 35 | 0 | 122.99 |
+| 14 | AB7-Influence+PotentialConversionx1+Mat-40 | 25 | 0 | 147.42 |
+
+Conclusion:
+
+- Iterative Deepening overperforms Alpha-beta Negamax under all heuristic.
+- Different combinations of heuristics may contribute to different levels of performance improvement, but the best-performing combination is still Influence and Expansion.
+
+## 6. Further Improvements - Hyperparameter Tuning and Random Search
+
+However, when competing against other students' models, the performance is not as good as expected. After analyzing the game records, it is found that the clone weight (initially set to 300) in move ordering is too high, which causes the agent to prioritize clone moves too much and overlook good jump moves. To resolve this issue, a thorough hyperparameter tuning is conducted for various weights.
+
+### 6.1. Clone Weight Tuning
+
+Table 7 shows the results of testing different clone weights for move ordering. (2 trials for each pair)
+
+| Rank | Heuristic | Wins | Timeout Wins | Avg Move Time |
+|---:|---|---:|---:|---:|
+| 1 | ID-Expansion+Mat40-CloneBase60 | 10 | 2 | 847.02 |
+| 2 | ID-Expansion+Mat40-CloneBase100 | 5 | 1 | 850.82 |
+| 3 | ID-Expansion+Mat40-CloneBase250 | 4 | 0 | 706.23 |
+| 4 | ID-Expansion+Mat40-CloneBase200 | 4 | 0 | 806.32 |
+| 5 | ID-Expansion+Mat40-CloneBase150 | 4 | 0 | 885.73 |
+| 6 | ID-Expansion+Mat40-CloneBase300 | 3 | 0 | 876.63 |
+
+Conclusion: Reducing the clone weight from 300 to 60 significantly improves the performance of the agent, as it allows the agent to consider jump moves more seriously, which can be crucial in certain game states.
+
+### 6.2. Random Search for Hyperparameters
+
+To efficiently find good hyperparameters, a random search is conducted for the following parameters:
+
+- Clone base weight (between 20 and 180)
+- Capture weight (between 10 and 50)
+- Material weight (between 20 and 100), with the base Material weight set to 0
+
+Table 8 shows the results of the random search (6 trials for each pair). For example, `Expansion_Cl120_Ca35_M80` means the clone base weight is 120, the capture weight is 35 and the material weight is 80.
+
+| Rank | Heuristic | Wins | Timeout Wins | Avg Move Time |
+|---:|---|---:|---:|---:|
+| 1 | Expansion_Cl120_Ca35_M80 | 73 | 24 | 739.81 |
+| 2 | Expansion_Cl120_Ca10_M30 | 70 | 15 | 796.12 |
+| 3 | Expansion_Cl170_Ca15_M40 | 69 | 16 | 763.71 |
+| 4 | Expansion_Cl150_Ca50_M60 | 68 | 9 | 794.75 |
+| 5 | Expansion_Cl160_Ca50_M90 | 66 | 20 | 850.65 |
+| 6 | Expansion_Cl100_Ca25_M80 | 65 | 17 | 814.82 |
+| 7 | Expansion_Cl90_Ca40_M70 | 61 | 17 | 869.31 |
+| 8 | Expansion_Cl90_Ca45_M80 | 53 | 14 | 915.12 |
+| 9 | Expansion_Cl70_Ca40_M100 | 52 | 6 | 844.84 |
+| 10 | Expansion_Cl70_Ca30_M80 | 51 | 12 | 889.88 |
+| 11 | Expansion_Cl30_Ca50_M50 | 50 | 0 | 826.74 |
+| 12 | Expansion_Cl170_Ca30_M100 | 50 | 18 | 801.43 |
+| 13 | Expansion_Cl50_Ca20_M40 | 49 | 5 | 861.89 |
+| 14 | Expansion_Cl150_Ca25_M100 | 49 | 19 | 849.88 |
+| 15 | Influence+Expanison_Cl300_Ca30_M60 | 48 | 12 | 716.64 |
+| 16 | Expansion_Cl60_Ca30_M70 | 48 | 13 | 874.31 |
+| 17 | Expansion_Cl30_Ca10_M60 | 46 | 18 | 923.30 |
+| 18 | Expansion_Cl90_Ca30_M30 | 43 | 0 | 849.66 |
+| 19 | Influence+Expansion_Cl60_Ca30_M60 | 15 | 0 | 786.13 |
+
+`Expansion_Cl60_Ca30_M70`, `Influence+Expansion_Cl60_Ca30_M60` and `Influence+Expanison_Cl300_Ca30_M60` corresponds to previously tested best-performing models in Table 6 and Table 7.
+
+Conclusion: 
+
+- The random search allows for efficient exploration of the hyperparameter space, and can lead to significant performance improvements compared to manually tuning each parameter. 
+- The best-performing model from the random search is `Expansion_Cl120_Ca35_M80`, which suggests that a moderate clone weight (similar to the jump weight of 100) and a reasonably high material weight (80, compared to previous baseline of 50) can provide a good balance for move ordering and heuristic evaluation.
+
+### 6.3. Final Model
+
+Table 9 shows the results of evaluating the better-performing base heuristics under the same hyperparameters (Clone base weight = 120, Capture weight = 35, Material weight = 80) found from the random search.
+
+| Rank | Heuristic | Wins | Timeout Wins | Avg Move Time |
+|---:|---|---:|---:|---:|
+| 1 | PositionWeight | 50 | 4 | 768.70 |
+| 2 | Influence | 35 | 5 | 744.80 |
+| 3 | PotentialConversion | 30 | 0 | 840.14 |
+| 4 | Material | 30 | 0 | 878.56 |
+| 5 | Mobility | 29 | 10 | 798.48 |
+| 6 | Expansion | 26 | 5 | 763.25 |
+| 7 | Frontier | 10 | 10 | 786.39 |
+
+Table 10 shows the results of evaluating the combinations of better-performing base heuristics under the same hyperparameters.
+
+| Rank | Heuristic | Wins | Timeout Wins | Avg Move Time |
+|---:|---|---:|---:|---:|
+| 1 | PositionWeight | 58 | 14 | 742.95 |
+| 2 | Influence | 55 | 20 | 769.96 |
+| 3 | Combo(PositionWeight+PotentialConversion) | 54 | 15 | 791.76 |
+| 4 | Combo(PotentialConversion+Mobility) | 50 | 10 | 716.96 |
+| 5 | Combo(Influence+PotentialConversion) | 46 | 8 | 754.67 |
+| 6 | PotentialConversion | 45 | 20 | 845.59 |
+| 7 | Combo(PositionWeight+Influence) | 40 | 5 | 753.73 |
+| 8 | Mobility | 40 | 10 | 770.68 |
+| 9 | Combo(Influence+Mobility) | 32 | 7 | 760.28 |
+| 10 | Combo(PositionWeight+Mobility) | 30 | 0 | 764.07 |
+
+However, the tournament has its limitations as it only tests against a limited set of opponents, and the results may not generalize well to other opponents which may have various play styles. After thorough testing against more opponents, it is found that Position Weight is less flexible and adaptable than Influence, but serves as a strong static evaluation when combined with other heuristics. Another aspect worth considering is the risk of timeouts; heuristics with more timeout wins have more unstable performance, as they may fail to find good moves within the time limit in certain game states. Therefore, the final model is `PotentialConversion+Mobility` with the hyperparameters found from the random search.
+
+## 7. Conclusion
+
+The final model is an Iterative Deepening search algorithm with a combination of base heuristics, achieving a strong performance against AIs and human players.
+
+The main limitation of the current model is that it still relies on hand-crafted heuristics, which may not capture all the complexities of the game. Future work could explore the use of reinforcement learning to automatically learn heuristics from self-play, which has been successful in other board games like Go and Chess. That being said, the current heuristic-based model is still a competitive choice with limited time and computational resources. In addition, according to related papers on Ataxx, "Performance of Monte Carlo Tree Search Algorithms when Playing the Game Ataxx" [2] and "Generalized Proof-Number Monte-Carlo Tree Search
+" [3], MCTS can perform well in Ataxx when tuned properly, so further improvements can be made by optimizing the MCTS implementation and its heuristics.
+
+In summary, this project demonstrates the importance of search algorithms, heuristics, and hyperparameter tuning in designing a strong game-playing agent for Ataxx. My personal takeaways from this project include understanding the trade-offs between time and search depth, the significance of hyperparameter tuning via random search, and the value of systematic evaluation of different models and heuristics. 
+
+The concept of systematic evaluation can be applied to other domains as well, such as machine learning, where controlled experiments and ablation studies are crucial for understanding the impact of anything from model architecture to training techniques.
+
+## References and Acknowledgements
+
+S. G. Akl and M. M. Newborn, “The principal continuation and the killer heuristic,” 1977 ACM Annual Conference Proceedings, pp. 466–473, Jan. 1977, doi: 10.1145/800179.810240. L. F. R. Ribeiro and D. R. Figueiredo, “Performance of Monte Carlo Tree Search Algorithms when Playing the Game Ataxx,” ENIAC 2018, pp. 275–286, Oct. 2018, doi: 10.5753/eniac.2018.4423. J. Kowalski, D. J. N. J. Soemers, S. Kosakowski, and M. H. M. Winands, “Generalized Proof-Number Monte-Carlo Tree Search,” in Frontiers in artificial intelligence and applications, 2025. doi: 10.3233/faia251406.
+
+The code is completely original and implemented by myself, with reference to the lecture slides and some online resources for basic algorithms, while the heuristics and the overall design of the agent are my own.

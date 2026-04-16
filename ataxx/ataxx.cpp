@@ -1356,6 +1356,7 @@ void play_games(int step) {
     // static ExpansionHeuristic h_best(80);
     static PositionWeightHeuristic h1(0);
     static InfluenceHeuristic h2(0);
+    // static PotentialConversionHeuristic h2(0);
     static APlusBHeuristic h_best(&h1, &h2, 80);
     Move best = iterative_deepening_solver(s, player, &h_best, 10000, 1500.0);
 
