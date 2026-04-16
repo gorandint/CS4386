@@ -103,6 +103,19 @@ bool g_zob_ready = false;
 bool g_time_out = false;
 chrono::steady_clock::time_point g_start_time;
 double g_time_limit_ms = 0.0;
+int g_time_node_count = 0;
+
+inline bool time_exceeded() {
+    if (g_time_limit_ms <= 0.0) return false;
+    double elapsed = chrono::duration<double, milli>(
+        chrono::steady_clock::now() - g_start_time
+    ).count();
+    if (elapsed > g_time_limit_ms) {
+        g_time_out = true;
+        return true;
+    }
+    return false;
+}
 
 /* Heuristic parameters */
 
@@ -992,12 +1005,8 @@ public:
 
 int ab_negamax(const Bitboard& s, U64 hash, int depth, int max_depth, int8 player,
                const Heuristic* h, int alpha, int beta) {
-    static int node_count = 0;
-    if (g_time_limit_ms > 0.0 && ((++node_count & 8191) == 0)) { // Check time every 8192 nodes
-        double elapsed = chrono::duration<double, milli>(
-            chrono::steady_clock::now() - g_start_time
-        ).count();
-        if (elapsed > g_time_limit_ms) g_time_out = true;
+    if (g_time_limit_ms > 0.0 && ((++g_time_node_count & 2047) == 0)) { // Check time every 2048 nodes to reduce overhead.
+        time_exceeded();
     }
     if (g_time_out) return 0; // Do not trust time-out score, just return 0 to stop search immediately.
 
@@ -1110,13 +1119,14 @@ Move iterative_deepening_solver(const Bitboard& s, int8 player, const Heuristic*
     g_time_out = false;
     g_start_time = chrono::steady_clock::now();
     g_time_limit_ms = time_limit_ms;
+    g_time_node_count = 0;
 
     Move best = root_moves[0];
     U64 root_hash = get_hash(s, player);
     int n_moves = root_moves.size();
 
     for (int depth = 1; depth <= max_depth; depth++) {
-        if (g_time_out) break;
+        if (g_time_out || time_exceeded()) break;
 
         for (int i = 0; i < n_moves; i++) {
             if (root_moves[i] == best) {
@@ -1132,6 +1142,10 @@ Move iterative_deepening_solver(const Bitboard& s, int8 player, const Heuristic*
         bool complete = true;
 
         for (Move& mv : root_moves) {
+            if (time_exceeded()) {
+                complete = false;
+                break;
+            }
             Bitboard ns = apply_move(s, player, mv);
             U64 nh = incremental_hash(root_hash, s, ns);
             int score = -ab_negamax(ns, nh, 1, depth, (3 - player), h, -beta, -max(alpha, best_score_depth));
