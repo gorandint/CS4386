@@ -1337,13 +1337,12 @@ void play_games(int step) {
     int8 player = (step & 1) ? 1 : 2;
     Bitboard s = board_to_state(board, step);
 
-    // static ExpansionHeuristic h_base(0);
-    // static MaterialPlusHeuristic h_best(&h_base, 40);
-    // static InfluenceHeuristic h1;
-    // static PotentialConversionHeuristic h2;
-    // static ExpansionHeuristic h2;
-    // static APlusBHeuristic h_best(&h1, &h2, 0);
-    static ExpansionHeuristic h_best(80); // Clone 120 - Capture 35 - Material 80
+    // Clone 120 - Capture 35 - Material 80
+
+    // static ExpansionHeuristic h_best(80);
+    static PositionWeightHeuristic h1(0);
+    static InfluenceHeuristic h2(0);
+    static APlusBHeuristic h_best(&h1, &h2, 80);
     Move best = iterative_deepening_solver(s, player, &h_best, 10000, 1500.0);
 
     save_decision(best.sr, best.sc, best.dr, best.dc);
