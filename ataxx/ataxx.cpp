@@ -1676,7 +1676,7 @@ int main() {
     vector<APlusBHeuristic> combo_h;
     combo_h.reserve(6);
 
-    int idx25[] = {6, 0, 3, 5}; // PositionWeight, Influence, PotentialConversion, Mobility
+    vector<int> idx25 = {6, 0, 3, 5}; // PositionWeight, Influence, PotentialConversion, Mobility
 
     for (int k = 0; k < 4 && k < (int)idx25.size(); k++) {
         int i = idx25[k];
@@ -1708,11 +1708,11 @@ int main() {
     });
 
     fprintf(report_fp, "## Selection Summary\n\n");
-    if (!idx25.empty()) {
-        int best25 = idx25[0];
-        fprintf(report_fp, "Stage 25 best: **%s** (wins=%d, timeout wins=%d, avg move time=%.2f ms).\n",
-                stage25[best25].name.c_str(), r25.wins[best25], r25.timeout_wins[best25], r25.avg_move_time[best25]);
-    }
+    // if (!idx25.empty()) {
+    //     int best25 = idx25[0];
+    //     fprintf(report_fp, "Stage 25 best: **%s** (wins=%d, timeout wins=%d, avg move time=%.2f ms).\n",
+    //             stage25[best25].name.c_str(), r25.wins[best25], r25.timeout_wins[best25], r25.avg_move_time[best25]);
+    // }
     if (!idx26.empty()) {
         int best26 = idx26[0];
         fprintf(report_fp, "Stage 26 best: **%s** (wins=%d, timeout wins=%d, avg move time=%.2f ms).\n\n",
